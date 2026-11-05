@@ -7,7 +7,8 @@ service cloud.firestore {
     // En el panel se ingresa solo "user"; internamente es user@tienda-admin.local.
     function isAdmin() {
       return request.auth != null
-        && request.auth.token.email in ['user@tienda-admin.local'];
+        && (request.auth.token.email in ['user@tienda-admin.local']
+            || exists(/databases/$(database)/documents/admins/$(request.auth.token.email)));
     }
 
     // Un pedido nuevo solo puede crearse con esta forma y tamaños (evita basura y abuso).
@@ -18,11 +19,12 @@ service cloud.firestore {
         && d.status == 'nuevo'
         && d.createdAt == request.time
         && d.customer is map
-        && d.customer.keys().hasOnly(['name', 'phone', 'delivery', 'address', 'zone', 'payment', 'note'])
+        && d.customer.keys().hasOnly(['name', 'phone', 'delivery', 'address', 'zone', 'pickup', 'payment', 'note'])
         && d.customer.name is string && d.customer.name.size() > 0 && d.customer.name.size() <= 80
         && d.customer.phone is string && d.customer.phone.size() >= 7 && d.customer.phone.size() <= 30
         && d.customer.delivery in ['retiro', 'envio']
         && (!('address' in d.customer) || (d.customer.address is string && d.customer.address.size() <= 200))
+        && (!('pickup' in d.customer) || (d.customer.pickup is string && d.customer.pickup.size() <= 80))
         && (!('zone' in d.customer) || (d.customer.zone is string && d.customer.zone.size() <= 80))
         && (!('discount' in d) || (d.discount is number && d.discount >= 0 && d.discount <= 10000000))
         && (!('coupon' in d) || (d.coupon is string && d.coupon.size() <= 30))
@@ -39,6 +41,10 @@ service cloud.firestore {
     match /products/{id} {
       allow read: if true;
       allow write: if isAdmin();
+    }
+    // Administradores adicionales (se gestionan desde el panel > Usuarios).
+    match /admins/{email} {
+      allow read, write: if isAdmin();
     }
     match /categories/{id} {
       allow read: if true;

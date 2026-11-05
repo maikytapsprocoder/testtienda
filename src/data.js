@@ -66,6 +66,7 @@ function createDemoDB() {
       const st = read('orderStatus'); st.push({ id: code, status: 'nuevo', updatedAt: Date.now() }); lsSet(key('orderStatus'), st);
       return code;
     },
+    async createAdmin() { throw new Error('En modo demo no se pueden crear usuarios reales. Conectá Firebase para usar esta función.'); },
     async getOrderStatus(code) {
       const d = read('orderStatus').find(x => x.id === code);
       return d ? { status: d.status, updatedAt: d.updatedAt } : null;
@@ -133,6 +134,20 @@ async function createFirebaseDB() {
     async getOrderStatus(code) {
       const d = await fsM.getDoc(fsM.doc(fs, 'orderStatus', code));
       return d.exists() ? d.data() : null;
+    },
+    async createAdmin(username, password) {
+      const email = userToEmail(username);
+      // El usuario se crea con una segunda conexión para no cerrar la sesión actual
+      const sec = appM.initializeApp(FB_CFG, 'sec' + Date.now()), secAuth = authM.getAuth(sec);
+      let existed = false;
+      try { await authM.createUserWithEmailAndPassword(secAuth, email, password); }
+      catch (e) {
+        if (e && e.code === 'auth/email-already-in-use') existed = true;
+        else if (e && /operation-not-allowed|admin-restricted/.test(e.code || '')) throw new Error('Firebase no permite crear usuarios desde la tienda. Activá el registro en Authentication > Configuración > Acciones del usuario, o creá el usuario a mano en Firebase y volvé a intentar.');
+        else throw new Error(authMsg(e));
+      } finally { try { await authM.signOut(secAuth); } catch { /* nada */ } }
+      await fsM.setDoc(fsM.doc(fs, 'admins', email), { email, createdAt: Date.now() });
+      return { email, existed };
     },
     auth: {
       onChange(cb) { authM.onAuthStateChanged(au, cb); },

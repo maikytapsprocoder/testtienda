@@ -31,7 +31,7 @@ function priceOrder({ itemsTotal, couponCode, customer = {}, settings = {} }) {
 
 function buildMessage({ code, lines, verifiedTotal, mismatch, customer, storeName, shipping = 0, discount = 0, coupon = '' }) {
   const items = lines.map(l => `• ${l.qty} x ${l.name} — ${money(l.price * l.qty)}`).join('\n');
-  const entrega = customer.delivery === 'envio' ? `Envío a: ${customer.address || '(sin dirección)'}${customer.zone ? ' (' + customer.zone + ')' : ''}` : 'Retiro en el local';
+  const entrega = customer.delivery === 'envio' ? `Envío a: ${customer.address || '(sin dirección)'}${customer.zone ? ' (' + customer.zone + ')' : ''}` : 'Retiro en el local' + (customer.pickup ? ': ' + customer.pickup : '');
   return [
     `🛒 Nuevo pedido ${code}${storeName ? ' · ' + storeName : ''}`,
     '',

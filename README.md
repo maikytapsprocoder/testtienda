@@ -132,3 +132,25 @@ Los productos de ejemplo tienen marcas y precios ficticios: reemplazalos por los
 ## Variantes (talle, color, etc.)
 
 En el panel, al crear o editar un producto, el campo **Variantes** acepta una línea por grupo (`Talle: S, M, L` / `Color: Negro, Blanco`, hasta 3 grupos). El cliente elige una opción de cada grupo antes de agregar al carrito; cada combinación es una línea del carrito y del pedido. El stock es el total del producto y se reparte entre sus variantes.
+
+## Aviso de pedidos por email (sin servidor)
+
+Ajustes > "Aviso de pedidos por email". Cuenta gratuita en emailjs.com: conectá tu correo (Email Services), creá una plantilla con asunto `{{subject}}` y cuerpo `{{message}}` (destinatario: tu correo) y pegá Service ID, Template ID y Public Key. El botón "Enviar correo de prueba" confirma que funciona. Estos tres datos son públicos por diseño de EmailJS; restringí el servicio a tu dominio desde su panel. Si no querés usar el WhatsApp automático (Cloud Function), esto alcanza.
+
+## Solo catálogo
+
+- Por producto: casillas "Solo catálogo" y "Ocultar el precio" al crear/editar.
+- Toda la tienda: Ajustes > "Modo catálogo". Sin carrito; cada producto se consulta por WhatsApp (o en el local si no hay número cargado).
+
+## Carga masiva y respaldo
+
+Productos > "Importar / exportar": descargá la plantilla CSV, completala en Excel o Google Sheets (una fila por producto) y subila. Las secciones nuevas se crean solas; si el nombre coincide con un producto existente, se actualiza (sin duplicar). Antes de guardar se muestra un resumen con las filas que tienen problemas. Admite hasta 500 filas por vez, separador `;` o `,` y precios como `1.250,50`. También exporta productos (mismo formato, sirve de respaldo y se puede volver a importar) y pedidos.
+
+## Más funciones (panel y tienda)
+
+- **Resumen**: pestaña con ventas, pedidos, productos más pedidos y stock bajo.
+- **Favoritos y relacionados**: los clientes guardan productos con el corazón (`#/favoritos`) y ven productos relacionados en cada ficha.
+- **Retiro en el local**: Ajustes → "Pedir día y hora de retiro". **Datos de transferencia** (alias/CBU): se muestran al elegir transferencia.
+- **Usuarios (varios administradores)**: pestaña Usuarios. Requiere habilitar Email/Contraseña en Firebase Auth y republicar `firestore.rules`.
+- **Imágenes con Cloudinary** (alternativa gratis a Firebase Storage): Ajustes → completar `cloudName` y `cloudPreset` (preset "unsigned").
+- **Versión demo**: `node scripts/make-demo.js` genera `demo/` con cartel de vista previa, para mostrar a clientes.

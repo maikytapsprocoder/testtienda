@@ -10,7 +10,7 @@ function adminView() {
   const rules = state.fsError ? '<div class="wrap"><p class="err" role="alert" style="margin:12px 0">No se pueden leer los productos de Firestore. Casi seguro faltan publicar las reglas (Firebase > Firestore > Reglas). Mientras tanto la tienda muestra productos de ejemplo.</p></div>' : '';
   return `<div id="adminShell"><div class="adm-bar"><div class="wrap"><span class="logo"><span class="logo-mark"></span>${esc(state.settings.storeName)} · Administración</span>
     <nav><a class="btn" href="#/">Ver tienda</a><button type="button" class="btn" data-act="admLogout">Salir</button></nav></div></div>${rules}
-    <div class="wrap"><div class="tabs" role="tablist">${tab('products', 'Productos')}${tab('categories', 'Categorías')}${tab('banners', 'Ofertas y banners')}${tab('orders', 'Pedidos', nuevos || '')}${tab('settings', 'Ajustes')}</div>
+    <div class="wrap"><div class="tabs" role="tablist">${tab('summary', 'Resumen')}${tab('products', 'Productos')}${tab('categories', 'Categorías')}${tab('banners', 'Ofertas y banners')}${tab('orders', 'Pedidos', nuevos || '')}${tab('admins', 'Usuarios')}${tab('settings', 'Ajustes')}</div>
     <div id="adminBody" role="tabpanel"></div></div></div>`;
 }
 function loginView() {
@@ -53,7 +53,7 @@ function renderAdminBody() {
   applyPendingStock(); ensureCats();
   const b = $('#adminBody'); if (!b) return;
   const t = state.admin.tab;
-  b.innerHTML = t === 'products' ? productsTab() : t === 'categories' ? categoriesTab() : t === 'banners' ? bannersTab() : t === 'orders' ? ordersTab() : settingsTab();
+  b.innerHTML = t === 'admins' ? adminsTab() : t === 'summary' ? summaryTab() : t === 'products' ? productsTab() : t === 'categories' ? categoriesTab() : t === 'banners' ? bannersTab() : t === 'orders' ? ordersTab() : settingsTab();
   const nuevos = state.orders.filter(o => o.status === 'nuevo').length;
   const tabBtn = $('[data-tab=orders]'); if (tabBtn) tabBtn.innerHTML = 'Pedidos' + (nuevos ? `<span class="badge">${nuevos}</span>` : '');
   $$('.tabs [data-tab]').forEach(x => x.setAttribute('aria-selected', x.dataset.tab === t));
@@ -79,7 +79,7 @@ function productRows() {
 function productsTab() {
   return `<div class="a-tools"><input class="in" type="search" placeholder="Buscar producto" aria-label="Buscar producto" data-act="admSearch" value="${esc(state.admin.q)}">
     <select class="in" aria-label="Filtrar por sección" data-act="admCatFilter"><option value="">Todas las secciones</option>${Object.entries(CATS).map(([k, c]) => `<option value="${k}" ${state.admin.cat === k ? 'selected' : ''}>${c.name}</option>`).join('')}</select>
-    <span class="sp"></span><button type="button" class="btn btn-primary" data-act="admNew">Nuevo producto</button></div>
+    <span class="sp"></span><button type="button" class="btn btn-line" data-act="admImport">Importar / exportar</button><button type="button" class="btn btn-primary" data-act="admNew">Nuevo producto</button></div>
     <p class="note" style="margin:-4px 0 12px">Editá precio, precio anterior (para mostrar la oferta) y stock directamente en la lista. Los cambios se publican al instante.</p>
     <div id="aList">${productRows()}</div>`;
 }
@@ -132,7 +132,22 @@ function updatePreview(form) {
   $('#imgPv').src = img || artUri(art, accent);
   $('#imgNote').textContent = img ? (img.startsWith('data:') ? 'Foto subida.' : '') : 'Sin imagen: se muestra la ilustración elegida abajo.';
 }
+/* Si hay Cloudinary configurado, la foto se sube allá y se guarda solo el enlace; si no (o si falla), se guarda dentro de la base como antes */
 async function fileToDataUrl(file, maxSide, maxLen = 600000) {
+  const s = state.settings;
+  if (s.cloudName && s.cloudPreset) {
+    try {
+      const url = await fileToDataUrlLocal(file, Math.max(maxSide, 1200), 2500000);
+      const fd = new FormData(); fd.append('file', url); fd.append('upload_preset', s.cloudPreset);
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(s.cloudName)}/image/upload`, { method: 'POST', body: fd });
+      const j = await res.json().catch(() => ({}));
+      if (res.ok && j.secure_url) return j.secure_url;
+      console.warn('Cloudinary', res.status, j); toast('No se pudo subir al servicio de fotos (' + ((j.error && j.error.message) || res.status) + '). Se guarda dentro de la tienda.', { bad: true });
+    } catch (e) { console.warn('Cloudinary', e); }
+  }
+  return fileToDataUrlLocal(file, maxSide, maxLen);
+}
+async function fileToDataUrlLocal(file, maxSide, maxLen = 600000) {
   const bmp = await createImageBitmap(file);
   let side = maxSide, q = .86;
   for (let i = 0; i < 6; i++) {
@@ -166,6 +181,8 @@ function openProductForm(id) {
     </div>
     ${galleryField(p.images && p.images.length ? p.images : (p.image ? [p.image] : []), p.art, catById(p.category).acc)}${artSelect(p.art)}
     <label class="chk"><input type="checkbox" name="active" ${p.active !== false ? 'checked' : ''}> Visible en la tienda</label>
+    <label class="chk"><input type="checkbox" name="catalogOnly" ${p.catalogOnly ? 'checked' : ''}> Solo catálogo (no se vende online: el cliente lo consulta por WhatsApp)</label>
+    <label class="chk" style="margin-left:26px"><input type="checkbox" name="hidePrice" ${p.hidePrice ? 'checked' : ''}> Ocultar el precio (muestra “Consultar precio”)</label>
     <p class="err" data-err hidden role="alert"></p>
     <div class="dlg-f"><button type="button" class="btn btn-line" data-act="closeDlg">Cancelar</button><button type="submit" class="btn btn-primary">Guardar producto</button></div></form>`);
 }
@@ -249,7 +266,7 @@ function openOrder(id) {
   openForm('Pedido ' + (o.code || ''), `<p class="muted">${fmtDate(o.createdAt)} · ${waChip(o)}</p>
     <table class="ord-items"><tbody>${(o.items || []).map(i => `<tr><td>${esc(i.qty)} × ${esc(i.name)}</td><td>${money(i.price * i.qty)}</td></tr>`).join('')}${o.discount ? `<tr><td>Descuento${o.coupon ? ' (' + esc(o.coupon) + ')' : ''}</td><td>− ${money(o.discount)}</td></tr>` : ''}${o.shipping ? `<tr><td>Envío${c.zone ? ' (' + esc(c.zone) + ')' : ''}</td><td>${money(o.shipping)}</td></tr>` : ''}<tr><td><b>Total</b></td><td style="font-size:18px">${money(o.total)}</td></tr></tbody></table>
     ${o.priceMismatch ? `<p class="err">Atención: los precios del pedido no coinciden con los actuales. Total verificado: ${money(o.verifiedTotal)}.</p>` : ''}
-    <p><b>${esc(c.name)}</b><br>${esc(c.phone)}<br>${c.payment ? 'Pago: ' + esc(c.payment) + '<br>' : ''}${c.delivery === 'envio' ? 'Envío a: ' + esc(c.address) + (c.zone ? ' (' + esc(c.zone) + ')' : '') : 'Retiro en el local'}</p>
+    <p><b>${esc(c.name)}</b><br>${esc(c.phone)}<br>${c.payment ? 'Pago: ' + esc(c.payment) + '<br>' : ''}${c.delivery === 'envio' ? 'Envío a: ' + esc(c.address) + (c.zone ? ' (' + esc(c.zone) + ')' : '') : 'Retiro en el local' + (c.pickup ? ': ' + esc(c.pickup) : '')}</p>
     ${c.note ? `<p class="muted" style="margin-top:8px">“${esc(c.note)}”</p>` : ''}
     <div class="dlg-f"><button type="button" class="btn btn-line" data-act="closeDlg">Cerrar</button><a class="btn btn-primary" target="_blank" rel="noopener" href="https://wa.me/${uyPhone(c.phone)}?text=${encodeURIComponent(msg)}">Escribir al cliente</a></div>`);
 }
@@ -262,7 +279,7 @@ function settingsTab() {
     <div class="field"><label for="s-t">Frase corta</label><input class="in" id="s-t" name="tagline" value="${esc(s.tagline)}"></div>
     <div class="field"><label for="s-p">Barra de beneficios (una por línea, máximo 3)</label><textarea class="in" id="s-p" name="perks" rows="3">${esc(perks)}</textarea></div>
     <div class="field"><label for="s-pm">Medios de pago para todos (uno por línea)</label><textarea class="in" id="s-pm" name="payMethods" rows="4">${esc((s.payMethods || []).join('\n'))}</textarea><small>El cliente elige uno al confirmar el pedido. Si lo dejás vacío, no se pregunta.</small></div>
-    <div class="field"><label for="s-pp">Solo si retira en el local</label><textarea class="in" id="s-pp" name="payPickup" rows="2">${esc((s.payPickup || []).join('\n'))}</textarea><small>Ej.: Tarjeta en el local.</small></div>
+    <div class="field"><label for="s-ppk">Solo si retira en el local</label><textarea class="in" id="s-ppk" name="payPickup" rows="2">${esc((s.payPickup || []).join('\n'))}</textarea><small>Ej.: Tarjeta en el local.</small></div>
     <div class="field"><label for="s-pd">Solo si pide envío a domicilio</label><textarea class="in" id="s-pd" name="payDelivery" rows="2">${esc((s.payDelivery || []).join('\n'))}</textarea><small>Ej.: Tarjeta en domicilio (POS).</small></div>
     <label class="chk" style="margin:6px 0 14px"><input type="checkbox" name="showShipping" ${s.showShipping === false ? '' : 'checked'}> Mostrar costo de envío junto a cada localidad</label>
     <small class="muted" style="display:block;margin:-8px 0 14px">Si lo desactivás, la lista solo muestra la localidad y el costo aparece abajo, en el total.</small>
@@ -280,10 +297,24 @@ function settingsTab() {
     <div class="field"><label for="s-f">Texto extra en el pie de página (opcional)</label><textarea class="in" id="s-f" name="footerInfo" rows="2">${esc(s.footerInfo)}</textarea></div>
     <h3 style="margin-top:22px">Envíos y límites</h3>
     <div class="field"><label for="s-z">Localidades y costo de envío (una por línea: Localidad | costo)</label><textarea class="in" id="s-z" name="zones" rows="8">${esc((s.shippingZones || []).map(z => z.name + ' | ' + (Number(z.cost) || 0)).join('\n'))}</textarea><small>Costo 0 = sin costo. Los costos por distancia son estimados: ajustalos a tu realidad. Las localidades que no figuren se coordinan por WhatsApp.</small></div>
+    <label class="chk" style="margin:6px 0 14px"><input type="checkbox" name="askPickup" ${s.askPickup ? 'checked' : ''}> Pedir día y hora de retiro cuando el cliente retira en el local</label>
+    <div class="field"><label for="s-ti">Datos para transferencias (se muestran al cliente que elige “Transferencia”)</label><textarea class="in" id="s-ti" name="transferInfo" rows="3" placeholder="Banco, cuenta, titular, alias…">${esc(s.transferInfo)}</textarea></div>
     <div class="field"><label for="s-fs">Envío gratis desde (monto, 0 = no usar)</label><input class="in" id="s-fs" name="freeShippingFrom" type="number" min="0" step="1" value="${esc(s.freeShippingFrom || 0)}"><small>Si el pedido (con descuentos) llega a ese monto, el envío es gratis en las localidades con costo.</small></div>
     <div class="field"><label for="s-cp">Cupones de descuento (uno por línea: CÓDIGO | 10% o CÓDIGO | 200)</label><textarea class="in" id="s-cp" name="coupons" rows="3" placeholder="BIENVENIDO | 10%">${esc((s.coupons || []).map(c => c.code + ' | ' + (c.type === 'pct' ? c.value + '%' : c.value)).join('\n'))}</textarea><small>"10%" descuenta un porcentaje; un número solo descuenta ese monto fijo. Los códigos no se pueden ocultar del todo (quedan en los datos públicos de la tienda): usalos para promociones, no para secretos.</small></div>
     <div class="form-grid"><div class="field"><label for="s-mu">Máximo de unidades por pedido</label><input class="in" id="s-mu" name="maxUnits" type="number" min="1" step="1" value="${esc(s.maxUnits ?? 30)}"></div>
     <div class="field"><label for="s-mp">Máximo de unidades del mismo producto</label><input class="in" id="s-mp" name="maxPerProduct" type="number" min="1" step="1" value="${esc(s.maxPerProduct ?? 10)}"></div></div>
+    <h3 style="margin-top:22px">Modo catálogo</h3>
+    <label class="chk" style="margin-bottom:14px"><input type="checkbox" name="catalogAll" ${s.catalogAll ? 'checked' : ''}> Toda la tienda en modo catálogo (sin carrito: todo se consulta por WhatsApp)</label>
+    <h3 style="margin-top:22px">Almacén de fotos (opcional)</h3>
+    <p class="note" style="margin-bottom:10px">Si cargás muchas fotos, conviene un servicio externo gratuito: en <b>cloudinary.com</b> creá una cuenta, andá a Settings &gt; Upload y creá un <i>upload preset</i> en modo <b>Unsigned</b>. Pegá acá tu <i>Cloud name</i> y el nombre del preset. Las fotos nuevas se suben allá y en la tienda se guarda solo el enlace.</p>
+    <div class="form-grid"><div class="field"><label for="s-cn">Cloud name</label><input class="in" id="s-cn" name="cloudName" value="${esc(s.cloudName)}"></div>
+    <div class="field"><label for="s-cu">Upload preset (unsigned)</label><input class="in" id="s-cu" name="cloudPreset" value="${esc(s.cloudPreset)}"></div></div>
+    <h3 style="margin-top:22px">Aviso de pedidos por email</h3>
+    <p class="note" style="margin-bottom:10px">Gratis con <b>emailjs.com</b>: creá una cuenta, conectá tu correo (Email Services), creá una plantilla (Email Templates) con asunto <code>{{subject}}</code> y cuerpo <code>{{message}}</code>, y destinatario tu correo. Copiá acá los tres datos. Con eso cada pedido te llega por email.</p>
+    <div class="field"><label for="s-es">Service ID</label><input class="in" id="s-es" name="emailServiceId" value="${esc(s.emailServiceId)}" placeholder="service_xxxxxxx"></div>
+    <div class="field"><label for="s-et">Template ID</label><input class="in" id="s-et" name="emailTemplateId" value="${esc(s.emailTemplateId)}" placeholder="template_xxxxxxx"></div>
+    <div class="field"><label for="s-ek">Public Key</label><input class="in" id="s-ek" name="emailPublicKey" value="${esc(s.emailPublicKey)}"></div>
+    <div style="margin-bottom:14px"><button type="button" class="btn btn-line btn-sm" data-act="admEmailTest">Enviar correo de prueba</button> <small class="muted" id="emailTestMsg"></small></div>
     <h3 style="margin-top:22px">Textos de páginas</h3>
     <div class="field"><label for="s-ps">Servicios</label><textarea class="in" id="s-ps" name="pageServices" rows="6">${esc(s.pageServices)}</textarea><small>Línea en blanco = nuevo párrafo. Una línea que empiece con ## es un subtítulo; con - es un punto de lista.</small></div>
     <div class="field"><label for="s-pt">Condiciones de compra</label><textarea class="in" id="s-pt" name="pageTerms" rows="6">${esc(s.pageTerms)}</textarea></div>
@@ -318,6 +349,14 @@ function adminClick(a, t) {
   const id = t.dataset.id;
   if (a === 'admTab') { state.admin.tab = t.dataset.tab; renderAdminBody(); }
   else if (a === 'admNew') openProductForm();
+  else if (a === 'admImport') openImportDialog();
+  else if (a === 'admDelAdmin') { if (!confirm('¿Quitarle el acceso al panel a ' + t.dataset.name + '? Su cuenta deja de poder editar la tienda.')) return; guarded(async () => { await DB.remove('admins', id); toast('Acceso quitado'); }); }
+  else if (a === 'admTpl') downloadFile('plantilla-productos.csv', productsCsv([
+    { name: 'Remera básica', category: 'Ropa', sub: 'Remeras', brand: 'Marca', price: 890, oldPrice: 1190, stock: 12, description: 'Algodón peinado', specs: 'Corte regular\nLavable a máquina', variants: [{ name: 'Talle', options: ['S', 'M', 'L'] }, { name: 'Color', options: ['Negro', 'Blanco'] }], images: ['https://ejemplo.com/foto1.jpg'], active: true },
+    { name: 'Producto sin variantes', category: 'Ropa', price: 1500, stock: 5, active: true }]));
+  else if (a === 'admExportP') downloadFile('productos-' + new Date().toISOString().slice(0, 10) + '.csv', productsCsv(state.products));
+  else if (a === 'admExportO') downloadFile('pedidos-' + new Date().toISOString().slice(0, 10) + '.csv', ordersCsv(state.orders));
+  else if (a === 'admImpGo') runImport();
   else if (a === 'admEdit') openProductForm(id);
   else if (a === 'admDel') { const p = state.products.find(x => x.id === id); askConfirm(`¿Eliminar “${p?.name}”? No se puede deshacer.`).then(ok => ok && guarded(async () => { await DB.remove('products', id); toast('Producto eliminado'); })); }
   else if (a === 'admCNew') openCategoryForm();
@@ -344,6 +383,15 @@ function adminClick(a, t) {
   else if (a === 'admGalDel') { const f = t.closest('form'), l = galGet(f); l.splice(+t.dataset.i, 1); galSet(f, l); }
   else if (a === 'admGalMain') { const f = t.closest('form'), l = galGet(f), [x] = l.splice(+t.dataset.i, 1); l.unshift(x); galSet(f, l); }
   else if (a === 'admImgClear') { const f = t.closest('form'); f.image.value = ''; $('#f-img').value = ''; updatePreview(f); }
+  else if (a === 'admEmailTest') {
+    const f = t.closest('form'), msg = $('#emailTestMsg'); msg.textContent = 'Enviando…';
+    const keep = state.settings;
+    state.settings = { ...keep, emailServiceId: f.emailServiceId.value.trim(), emailTemplateId: f.emailTemplateId.value.trim(), emailPublicKey: f.emailPublicKey.value.trim() };
+    notifyEmail({ customer: { name: 'Cliente de prueba', phone: '099000000', delivery: 'retiro' }, items: [{ name: 'Producto de prueba', price: 100, qty: 1 }], total: 100 }, 'P-PRUEBA', true)
+      .then(() => { msg.textContent = 'Listo: revisá tu correo (y spam). Recordá tocar “Guardar ajustes”.'; })
+      .catch(e => { msg.textContent = e.message || 'No se pudo enviar.'; })
+      .finally(() => { state.settings = keep; });
+  }
   else if (a === 'admSeed') askConfirm('Se cargarán los productos y banners de ejemplo. ¿Continuar?', 'Cargar').then(ok => ok && guarded(async () => {
     for (const p of seedProducts()) await DB.save('products', p.id, p);
     for (const b of SEED_BANNERS) await DB.save('banners', b.id, b);
@@ -353,6 +401,7 @@ function adminClick(a, t) {
 
 function adminChange(a, t) {
   const id = t.dataset.id;
+  if (a === 'admImpFile') { const f = t.files[0]; t.value = ''; if (f) f.text().then(importPreview).catch(() => toast('No se pudo leer el archivo.', { bad: true })); return; }
   if (a === 'admCatFilter') { state.admin.cat = t.value; $('#aList').innerHTML = productRows(); }
   else if (a === 'admInline') {
     const field = t.dataset.field, raw = t.value.trim();
@@ -365,6 +414,7 @@ function adminChange(a, t) {
   else if (a === 'admStatus') guarded(async () => {
     const o = state.orders.find(x => x.id === id);
     await DB.save('orders', id, { status: t.value });
+    await adjustStockForStatus(o, t.value); // cancelar devuelve el stock; reactivar lo vuelve a descontar
     if (o && o.code) await DB.save('orderStatus', o.code, { status: t.value, updatedAt: Date.now() }); // lo que ve el cliente al seguir su pedido
     toast('Estado actualizado');
   });
@@ -405,9 +455,15 @@ async function adminSubmit(form) {
     if (stock !== null && (Number.isNaN(stock) || stock < 0)) return formErr(form, 'El stock no es válido.');
     let images = []; try { images = JSON.parse(f.get('images') || '[]').filter(x => typeof x === 'string' && x).slice(0, MAX_IMGS); } catch { /* vacío */ }
     if (images.join('').length > 850000) return formErr(form, 'Las fotos pesan demasiado en total (límite de Firestore ~1 MB). Quitá alguna o usá enlaces.');
-    const data = { name: s('name'), category: s('category'), sub: s('sub'), brand: s('brand'), price, oldPrice: old, stock, description: s('description'), specs: String(f.get('specs') || '').trim(), variants: String(f.get('variants') || '').split('\n').map(l => { const [n, o] = l.split(':'); return { name: (n || '').trim(), options: [...new Set(String(o || '').split(',').map(x => x.trim()).filter(Boolean))].slice(0, 20) }; }).filter(g => g.name && g.options.length).slice(0, 3), images, image: images[0] || '', art: s('art'), active: f.get('active') === 'on', updatedAt: Date.now() };
+    const data = { name: s('name'), category: s('category'), sub: s('sub'), brand: s('brand'), price, oldPrice: old, stock, description: s('description'), specs: String(f.get('specs') || '').trim(), variants: String(f.get('variants') || '').split('\n').map(l => { const [n, o] = l.split(':'); return { name: (n || '').trim(), options: [...new Set(String(o || '').split(',').map(x => x.trim()).filter(Boolean))].slice(0, 20) }; }).filter(g => g.name && g.options.length).slice(0, 3), images, image: images[0] || '', art: s('art'), active: f.get('active') === 'on', catalogOnly: f.get('catalogOnly') === 'on', hidePrice: f.get('catalogOnly') === 'on' && f.get('hidePrice') === 'on', updatedAt: Date.now() };
     if (!id) data.createdAt = Date.now();
     return guarded(async () => { await DB.save('products', id, data); $('#dlgForm').close(); toast('Producto guardado'); }, form);
+  }
+  if (kind === 'newadmin') {
+    const u = s('username'), p = String(f.get('password') || '');
+    if (!u) return formErr(form, 'Escribí un usuario o correo.');
+    if (p.length < 6) return formErr(form, 'La contraseña necesita al menos 6 caracteres.');
+    return guarded(async () => { const r = await DB.createAdmin(u, p); form.reset(); toast(r.existed ? 'Ese usuario ya existía: ahora es administrador' : 'Administrador creado'); }, form);
   }
   if (kind === 'catmove') {
     const target = s('target'); if (!CATS[target]) return formErr(form, 'Elegí una categoría de destino.');
@@ -440,6 +496,7 @@ async function adminSubmit(form) {
       branches: String(f.get('branches') || '').split('\n').map(l => { const [n, a, im, lk] = l.split('|').map(x => (x || '').trim()); return { name: n, address: a, image: im, link: lk }; }).filter(b => b.name).slice(0, 6),
       contactWhatsapp: digits(s('contactWhatsapp')), contactEmail: s('contactEmail'), address: s('address'), hours: String(f.get('hours') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 7),
       shippingZones: String(f.get('zones') || '').split('\n').map(l => { const [n, c] = l.split('|'); return { name: (n || '').trim(), cost: Math.max(0, Math.round(num(c) || 0)) }; }).filter(z => z.name).slice(0, 60),
+      cloudName: s('cloudName'), cloudPreset: s('cloudPreset'), catalogAll: f.get('catalogAll') === 'on', askPickup: f.get('askPickup') === 'on', transferInfo: String(f.get('transferInfo') || '').trim(), emailServiceId: s('emailServiceId'), emailTemplateId: s('emailTemplateId'), emailPublicKey: s('emailPublicKey'),
       freeShippingFrom: Math.max(0, Math.round(num(f.get('freeShippingFrom')) || 0)),
       coupons: String(f.get('coupons') || '').split('\n').map(l => { const [c, v] = l.split('|').map(x => (x || '').trim()); const pct = /%$/.test(v || ''); const n = num((v || '').replace('%', '')); return { code: (c || '').toUpperCase().replace(/\s+/g, ''), type: pct ? 'pct' : 'fix', value: pct ? Math.min(100, n) : n }; }).filter(c => c.code && c.value > 0).slice(0, 20),
       maxUnits: Math.max(1, Math.floor(num(f.get('maxUnits')) || 30)), maxPerProduct: Math.max(1, Math.floor(num(f.get('maxPerProduct')) || 10)),
@@ -452,4 +509,162 @@ async function adminSubmit(form) {
     if (p1 !== p2) return formErr(form, 'Las contraseñas no coinciden.');
     return guarded(async () => { await DB.auth.changePassword(p1); form.reset(); toast('Contraseña actualizada'); }, form);
   }
+}
+
+
+/* ───────── Carga masiva, exportar y respaldo (CSV: se abre y se edita con Excel / Google Sheets) ───────── */
+const CSV_COLS = ['nombre', 'categoria', 'subcategoria', 'marca', 'precio', 'precio_anterior', 'stock', 'descripcion', 'caracteristicas', 'variantes', 'fotos', 'visible', 'solo_catalogo', 'ocultar_precio'];
+function csvParse(text) {
+  text = String(text).replace(/^\uFEFF/, '');
+  const first = text.split(/\r?\n/)[0] || '', d = (first.match(/;/g) || []).length >= (first.match(/,/g) || []).length ? ';' : ',';
+  const rows = []; let row = [], cur = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) { if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+    else if (ch === '"' && cur === '') q = true; // las comillas solo abren un campo si están al principio
+    else if (ch === d) { row.push(cur); cur = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cur); cur = ''; if (row.some(x => x.trim() !== '')) rows.push(row); row = []; }
+    else cur += ch;
+  }
+  row.push(cur); if (row.some(x => x.trim() !== '')) rows.push(row);
+  return rows;
+}
+const csvCell = v => { const t = String(v ?? ''); return /[;"\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+function productsCsv(list) {
+  const rows = list.map(p => [p.name, CATS[p.category]?.name || p.category || '', p.sub || '', p.brand || '', p.price ?? '', p.oldPrice || '', p.stock ?? '', p.description || '', String(p.specs || '').split('\n').map(x => x.trim()).filter(Boolean).join(' | '),
+    prodVariants(p).map(g => g.name + ': ' + g.options.join(', ')).join(' | '), (p.images && p.images.length ? p.images : p.image ? [p.image] : []).filter(u => !String(u).startsWith('data:')).join(' | '), p.active === false ? 'no' : 'si', p.catalogOnly ? 'si' : '', p.hidePrice ? 'si' : '']);
+  return [CSV_COLS, ...rows].map(r => r.map(csvCell).join(';')).join('\r\n');
+}
+function ordersCsv(list) {
+  const head = ['codigo', 'fecha', 'estado', 'cliente', 'telefono', 'entrega', 'localidad', 'direccion', 'pago', 'productos', 'descuento', 'envio', 'total', 'comentarios'];
+  const rows = list.map(o => { const c = o.customer || {}; return [o.code || o.id, fmtDate(o.createdAt), o.status, c.name, c.phone, c.delivery, c.zone || '', c.address || '', c.payment || '', (o.items || []).map(i => i.qty + ' x ' + i.name).join(' | '), o.discount || 0, o.shipping || 0, o.total, c.note || '']; });
+  return [head, ...rows].map(r => r.map(csvCell).join(';')).join('\r\n');
+}
+function downloadFile(name, text) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['\uFEFF' + text], { type: 'text/csv;charset=utf-8' }));
+  a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function openImportDialog() {
+  openForm('Importar / exportar productos', `<div class="imp">
+    <p><b>Cargar muchos productos de una vez.</b> Descargá la plantilla, completala en Excel o Google Sheets (una fila por producto) y guardala como <b>CSV</b>. Después subila acá. Las secciones que no existan se crean solas, y si el nombre coincide con un producto ya cargado, se actualiza.</p>
+    <div class="dlg-f" style="justify-content:flex-start;flex-wrap:wrap"><button type="button" class="btn btn-line" data-act="admTpl">Descargar plantilla</button>
+    <label class="btn btn-primary">Subir planilla CSV<input type="file" accept=".csv,text/csv,text/plain" class="sr" data-act="admImpFile"></label></div>
+    <hr style="margin:18px 0;border:0;border-top:1px solid var(--line)"><p><b>Respaldo.</b> Descargá tus datos cuando quieras.</p>
+    <div class="dlg-f" style="justify-content:flex-start;flex-wrap:wrap"><button type="button" class="btn btn-line" data-act="admExportP">Exportar productos</button><button type="button" class="btn btn-line" data-act="admExportO">Exportar pedidos</button></div>
+    <small class="muted">Columnas: ${CSV_COLS.join(', ')}. En <i>variantes</i> usá <code>Talle: S, M, L | Color: Negro, Blanco</code>; en <i>fotos</i> y <i>caracteristicas</i>, separá con <code> | </code>. Las fotos subidas desde el panel no se exportan (solo los enlaces).</small></div>`);
+}
+const normH = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+const ALIAS = { nombre: 'nombre', producto: 'nombre', name: 'nombre', categoria: 'categoria', seccion: 'categoria', subcategoria: 'subcategoria', marca: 'marca', precio: 'precio', precio_anterior: 'precio_anterior', precio_antes: 'precio_anterior', stock: 'stock', descripcion: 'descripcion', caracteristicas: 'caracteristicas', variantes: 'variantes', fotos: 'fotos', imagenes: 'fotos', visible: 'visible', solo_catalogo: 'solo_catalogo', ocultar_precio: 'ocultar_precio' };
+function parseMoney(v) {
+  let t = String(v ?? '').replace(/[^0-9.,-]/g, ''); if (t === '') return NaN;
+  if (t.includes(',') && t.includes('.')) t = t.replace(/\./g, '').replace(',', '.');
+  else if (t.includes(',')) t = t.replace(',', '.');
+  else if (/^\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, '');
+  const n = Number(t); return Number.isFinite(n) ? n : NaN;
+}
+const yes = v => /^(si|sí|s|1|true|x|yes)$/i.test(String(v || '').trim());
+var importPlan = null;
+function importPreview(text) {
+  const rows = csvParse(text);
+  if (rows.length < 2) return toast('La planilla está vacía o no tiene encabezados.', { bad: true });
+  const heads = rows[0].map(h => ALIAS[normH(h)] || ''), col = k => heads.indexOf(k);
+  if (col('nombre') < 0 || col('precio') < 0) return toast('Faltan las columnas "nombre" y "precio". Usá la plantilla.', { bad: true });
+  const get = (r, k) => (col(k) < 0 ? '' : String(r[col(k)] ?? '').trim());
+  const items = [], issues = [], newCats = new Map(), seen = new Set();
+  const catKey = name => Object.entries(CATS).find(([k, c]) => normH(c.name) === normH(name) || k === normH(name).replace(/_/g, '-'))?.[0];
+  rows.slice(1, 501).forEach((r, i) => {
+    const line = i + 2, name = get(r, 'nombre'), price = parseMoney(get(r, 'precio'));
+    if (!name) return issues.push(`Fila ${line}: falta el nombre.`);
+    if (!(price >= 0)) return issues.push(`Fila ${line} (${name}): precio no válido.`);
+    if (seen.has(normH(name))) return issues.push(`Fila ${line} (${name}): nombre repetido en la planilla, se omite.`);
+    seen.add(normH(name));
+    const cname = get(r, 'categoria'); let ck = cname ? catKey(cname) : Object.keys(CATS)[0];
+    if (cname && !ck) { ck = 'new:' + normH(cname); newCats.set(ck, cname); }
+    if (!ck) { issues.push(`Fila ${line} (${name}): falta la categoría y no hay ninguna creada.`); return; }
+    const old = parseMoney(get(r, 'precio_anterior')), stockRaw = get(r, 'stock'), stock = stockRaw === '' ? null : Math.max(0, Math.floor(parseMoney(stockRaw)));
+    const exist = state.products.find(p => normH(p.name) === normH(name));
+    items.push({ exist, data: {
+      name, category: ck, sub: get(r, 'subcategoria'), brand: get(r, 'marca'), price, oldPrice: old > price ? old : null, stock: Number.isNaN(stock) ? null : stock,
+      description: get(r, 'descripcion'), specs: get(r, 'caracteristicas').split('|').map(x => x.trim()).filter(Boolean).join('\n'),
+      variants: get(r, 'variantes').split('|').map(g => { const [n, o] = g.split(':'); return { name: (n || '').trim(), options: [...new Set(String(o || '').split(',').map(x => x.trim()).filter(Boolean))].slice(0, 20) }; }).filter(g => g.name && g.options.length).slice(0, 3),
+      images: get(r, 'fotos').split('|').map(x => x.trim()).filter(u => /^https?:\/\//i.test(u)).slice(0, MAX_IMGS),
+      active: col('visible') < 0 ? true : get(r, 'visible') === '' ? true : yes(get(r, 'visible')), catalogOnly: yes(get(r, 'solo_catalogo')), hidePrice: yes(get(r, 'solo_catalogo')) && yes(get(r, 'ocultar_precio'))
+    } });
+  });
+  importPlan = { items, newCats };
+  const nNew = items.filter(x => !x.exist).length, nUpd = items.length - nNew;
+  openForm('Revisá antes de importar', `<div class="imp"><p><b>${items.length}</b> producto${items.length === 1 ? '' : 's'} listo${items.length === 1 ? '' : 's'}: <b>${nNew}</b> nuevo${nNew === 1 ? '' : 's'} y <b>${nUpd}</b> para actualizar.${newCats.size ? ` Se crearán ${newCats.size} sección${newCats.size === 1 ? '' : 'es'} nueva${newCats.size === 1 ? '' : 's'}: ${[...newCats.values()].map(esc).join(', ')}.` : ''}</p>
+    ${issues.length ? `<p class="err" role="alert"><b>${issues.length} fila${issues.length === 1 ? '' : 's'} con problemas (no se importan):</b><br>${issues.slice(0, 12).map(esc).join('<br>')}${issues.length > 12 ? '<br>…' : ''}</p>` : ''}
+    <p class="err" data-err hidden role="alert" id="impErr"></p>
+    <div class="dlg-f"><button type="button" class="btn btn-line" data-act="closeDlg">Cancelar</button><button type="button" class="btn btn-primary" data-act="admImpGo" ${items.length ? '' : 'disabled'} id="impGo">Importar ${items.length}</button></div></div>`);
+}
+async function runImport() {
+  if (!importPlan) return;
+  const { items, newCats } = importPlan, btn = $('#impGo'); btn.disabled = true;
+  const err = m => { const e = $('#impErr'); e.textContent = m; e.hidden = false; btn.disabled = false; };
+  try {
+    const catMap = {}; let order = Object.keys(CATS).length;
+    for (const [k, name] of newCats) {
+      let cid = slugify(name), base = cid, n = 2; while (CATS[cid] || Object.values(catMap).includes(cid)) cid = base + '-' + n++;
+      const acc = '#2347F5'; await DB.save('categories', cid, { name, blurb: '', image: '', art: 'box', acc, tint: mixWhite(acc, .88), order: ++order });
+      catMap[k] = cid;
+    }
+    let done = 0;
+    for (const { exist, data } of items) {
+      const d = { ...data, category: catMap[data.category] || data.category, image: data.images[0] || '', art: exist?.art || '', updatedAt: Date.now() };
+      if (exist) { if (!d.images.length) { d.images = exist.images || []; d.image = exist.image || ''; } await DB.save('products', exist.id, d); }
+      else { d.createdAt = Date.now(); await DB.save('products', null, d); }
+      btn.textContent = `Importando… ${++done}/${items.length}`;
+    }
+    importPlan = null; $('#dlgForm').close(); toast(`${items.length} producto${items.length === 1 ? '' : 's'} importado${items.length === 1 ? '' : 's'}`);
+  } catch (e) { console.error(e); err(/permission|insufficient/i.test(e.message || '') ? 'Tu sesión no tiene permiso para guardar. Volvé a ingresar.' : (e.message || 'No se pudo importar.')); }
+}
+
+
+/* Cancelar un pedido devuelve el stock (una sola vez); si se reactiva, se vuelve a descontar */
+async function adjustStockForStatus(o, next) {
+  if (!o || !o.stockApplied) return;
+  const prev = o.status, tot = {};
+  for (const it of o.items || []) tot[it.id] = (tot[it.id] || 0) + Number(it.qty || 0);
+  const move = async sign => {
+    for (const [pid, q] of Object.entries(tot)) {
+      const p = state.products.find(x => x.id === pid);
+      if (p && p.stock !== null && p.stock !== undefined) await DB.save('products', pid, { stock: Math.max(0, Number(p.stock) + sign * q), updatedAt: Date.now() });
+    }
+  };
+  if (next === 'cancelado' && prev !== 'cancelado' && !o.stockRestored) { await move(+1); await DB.save('orders', o.id, { stockRestored: true }); toast('Pedido cancelado: el stock se devolvió'); }
+  else if (prev === 'cancelado' && next !== 'cancelado' && o.stockRestored) { await move(-1); await DB.save('orders', o.id, { stockRestored: false }); }
+}
+
+/* ── Resumen ── */
+function summaryTab() {
+  const now = Date.now(), day = 864e5, startToday = new Date().setHours(0, 0, 0, 0);
+  const valid = state.orders.filter(o => o.status !== 'cancelado');
+  const per = from => { const l = valid.filter(o => (o.createdAt || 0) >= from); return { n: l.length, sum: l.reduce((a, o) => a + (Number(o.total) || 0), 0) }; };
+  const periods = [['Hoy', per(startToday)], ['Últimos 7 días', per(now - 7 * day)], ['Últimos 30 días', per(now - 30 * day)]];
+  const top = {}; valid.filter(o => (o.createdAt || 0) >= now - 30 * day).forEach(o => (o.items || []).forEach(i => { const k = i.id; (top[k] = top[k] || { name: String(i.name).replace(/ \(.*\)$/, ''), q: 0 }).q += Number(i.qty || 0); }));
+  const topL = Object.values(top).sort((a, b) => b.q - a.q).slice(0, 5);
+  const low = state.products.filter(p => p.active !== false && Number.isFinite(Number(p.stock)) && p.stock !== null && Number(p.stock) <= 5).sort((a, b) => a.stock - b.stock).slice(0, 12);
+  const nuevos = state.orders.filter(o => o.status === 'nuevo').length;
+  return `<div class="stats">${periods.map(([l, v]) => `<div class="stat"><small>${l}</small><b>${money(v.sum)}</b><span>${v.n} pedido${v.n === 1 ? '' : 's'}</span></div>`).join('')}
+    <div class="stat ${nuevos ? 'hot' : ''}"><small>Pedidos nuevos</small><b>${nuevos}</b><span><button type="button" class="lnk" data-act="admTab" data-tab="orders">Ver pedidos</button></span></div></div>
+    <div class="stat-cols"><div class="panel"><h3>Más pedidos (30 días)</h3>${topL.length ? `<ol class="plain">${topL.map(x => `<li>${esc(x.name)} <b>× ${x.q}</b></li>`).join('')}</ol>` : '<p class="muted">Todavía no hay pedidos.</p>'}</div>
+    <div class="panel"><h3>Stock bajo o agotado</h3>${low.length ? `<ul class="plain">${low.map(p => `<li><button type="button" class="lnk" data-act="admEdit" data-id="${esc(p.id)}">${esc(p.name)}</button> <b class="${Number(p.stock) <= 0 ? 'bad' : 'lowst'}">${Number(p.stock) <= 0 ? 'agotado' : 'quedan ' + p.stock}</b></li>`).join('')}</ul>` : '<p class="muted">Todo con stock suficiente.</p>'}</div></div>
+    <p class="note">Los totales no incluyen pedidos cancelados. Son los pedidos recibidos en la tienda, no pagos confirmados.</p>`;
+}
+
+
+/* ── Usuarios (administradores) ── */
+function adminsTab() {
+  const me = (state.user && state.user.email || '').toLowerCase(), disp = e => String(e).replace('@tienda-admin.local', '');
+  const list = [...state.admins].sort((a, b) => String(a.email).localeCompare(b.email));
+  return `<div class="panel"><h3>Quién puede entrar al panel</h3>
+    <ul class="plain">${me ? `<li><span>${esc(disp(me))} <small class="muted">(vos)</small></span></li>` : ''}${list.filter(a => String(a.email).toLowerCase() !== me).map(a => `<li><span>${esc(disp(a.email))}</span><button type="button" class="btn btn-danger btn-sm" data-act="admDelAdmin" data-id="${esc(a.id)}" data-name="${esc(disp(a.email))}">Quitar</button></li>`).join('')}</ul>
+    <p class="note">El administrador principal está definido en las reglas de Firestore y no se puede quitar desde acá.</p></div>
+  <form class="panel" data-form="newadmin" novalidate><h3>Agregar administrador</h3>
+    <div class="form-grid"><div class="field"><label for="n-u">Usuario o correo</label><input class="in" id="n-u" name="username" autocomplete="off" placeholder="ej.: maria"></div>
+    <div class="field"><label for="n-p">Contraseña (mínimo 6)</label><input class="in" id="n-p" name="password" type="password" autocomplete="new-password"></div></div>
+    <p class="err" data-err hidden role="alert"></p><button type="submit" class="btn btn-primary">Crear administrador</button>
+    <p class="note" style="margin-top:10px">Crea la cuenta y le da permiso para editar productos, precios y pedidos. Requiere que el registro esté activado en Firebase (Authentication > Configuración > Acciones del usuario) y las reglas nuevas publicadas.</p></form>`;
 }

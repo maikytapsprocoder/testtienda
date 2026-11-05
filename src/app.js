@@ -93,6 +93,7 @@ const state = {
   route: { name: 'home' }, q: '', sub: '', sort: 'rel', onlyOffers: false, inStock: false,
   hero: 0, fsError: false, user: null, authReady: false, loginErr: '',
   admin: { tab: 'products', q: '', cat: '' },
+  admins: [],
   track: { code: '', res: null, err: '', loading: false, auto: '' }, checkoutAt: 0, deepDone: '', prevHash: '#/'
 };
 let DB = null;
@@ -144,7 +145,7 @@ function cartLines() {
   for (const [key, q] of Object.entries(state.cart)) {
     const [pid, label] = splitKey(key);
     const p = activeProducts().find(x => x.id === pid);
-    if (!p) continue;
+    if (!p || isCatalog(p)) continue;
     // el stock y el tope por producto se reparten entre todas sus variantes
     const room = Math.max(0, Math.min(stockOf(p), maxPer()) - (used[pid] || 0));
     const qty = Math.min(Number(q) || 0, room);
@@ -174,12 +175,25 @@ function setQty(key, qty) {
 function addToCart(key, n = 1) {
   const [pid] = splitKey(key);
   const p = activeProducts().find(x => x.id === pid);
-  if (!p) return;
+  if (!p || isCatalog(p)) return;
   if (stockOf(p) <= 0) return toast('Este producto no tiene stock.', { bad: true });
   if (setQty(key, (state.cart[key] || 0) + n)) return;
   const b = $('#cartBtn'); b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump');
   toast('Agregado al carrito', { label: 'Ver carrito', fn: openCart });
 }
+/* Solo catálogo: no se vende online, se consulta por WhatsApp. Puede ser por producto o para toda la tienda. */
+const favs = () => { const l = lsGet('nodo_fav'); return Array.isArray(l) ? l : []; };
+const isFav = id => favs().includes(id);
+const heartBtn = p => `<button type="button" class="heart" data-act="fav" data-id="${esc(p.id)}" aria-pressed="${isFav(p.id)}" aria-label="${isFav(p.id) ? 'Quitar de favoritos' : 'Guardar en favoritos'}"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3 5 6.2 5c1.9 0 3.2 1 3.8 2 .6-1 1.900-2 3.800-2 3.200 0 5.300 3.200 3.800 6.700C19.500 16.400 12 21 12 21Z"/></svg></button>`;
+function toggleFav(id) {
+  const l = favs(), i = l.indexOf(id); if (i >= 0) l.splice(i, 1); else l.push(id);
+  lsSet('nodo_fav', l);
+  $$(`[data-act=fav][data-id="${CSS.escape(id)}"]`).forEach(b => { b.setAttribute('aria-pressed', isFav(id)); b.setAttribute('aria-label', isFav(id) ? 'Quitar de favoritos' : 'Guardar en favoritos'); });
+  renderChrome(); if (state.route.name === 'favs') render();
+}
+const isCatalog = p => !!(S().catalogAll || p.catalogOnly);
+const priceHidden = p => isCatalog(p) && !!p.hidePrice;
+const consultLink = p => waLink('Hola, quiero consultar por: ' + p.name);
 const prodVariants = p => (Array.isArray(p.variants) ? p.variants : []).filter(g => g && g.name && Array.isArray(g.options) && g.options.length);
 function renderCartBadge() {
   $('#cartN').textContent = $('#cartFabN').textContent = cartCount();
@@ -217,6 +231,7 @@ function parseHash() {
   if (a === 'admin') return { name: 'admin' };
   if (a === 'c' && b) return { name: 'cat', cat: b };
   if (a === 'ofertas') return { name: 'offers' };
+  if (a === 'favoritos') return { name: 'favs' };
   if (a === 'p' && b) return { name: 'home', open: decodeURIComponent(b) };
   if (['contacto', 'servicios', 'condiciones', 'privacidad'].includes(a)) return { name: 'page', page: a };
   if (a === 'pedido') return { name: 'track', code: decodeURIComponent(b || '').toUpperCase() };
@@ -232,16 +247,16 @@ window.addEventListener('hashchange', () => {
 /* ───────── Piezas de la tienda ───────── */
 function card(p) {
   const offer = onOffer(p), out = stockOf(p) <= 0, c = catOf(p);
-  return `<article class="card ${out ? 'is-out' : ''}">
+  return `<article class="card ${out ? 'is-out' : ''}">${heartBtn(p)}
     <button type="button" class="card-img" data-act="open" data-id="${esc(p.id)}" style="--tint:${c.tint}" aria-label="Ver ${esc(p.name)}">
       <img loading="lazy" src="${esc(imgOf(p))}" alt="" class="${(p.images && p.images[0]) || p.image ? 'photo' : ''}">
-      ${offer ? `<span class="tag">-${pct(p)}%</span>` : ''}${out ? '<span class="out">Sin stock</span>' : ''}
+      ${offer && !priceHidden(p) ? `<span class="tag">-${pct(p)}%</span>` : ''}${out && !isCatalog(p) ? '<span class="out">Sin stock</span>' : ''}
     </button>
     <div class="card-b">
       <p class="card-meta">${esc(p.brand || c.name)}</p>
       <h3 class="card-t"><button type="button" class="linkish" data-act="open" data-id="${esc(p.id)}">${esc(p.name)}</button></h3>
-      <div class="price">${offer ? `<s>${money(p.oldPrice)}</s>` : ''}<strong>${money(p.price)}</strong></div>
-      <button type="button" class="btn btn-primary" data-act="add" data-id="${esc(p.id)}" ${out ? 'disabled' : ''}>${out ? 'Sin stock' : prodVariants(p).length ? 'Elegir opciones' : 'Agregar al carrito'}</button>
+      ${priceHidden(p) ? '<div class="price"><strong class="ask">Consultar precio</strong></div>' : `<div class="price">${offer ? `<s>${money(p.oldPrice)}</s>` : ''}<strong>${money(p.price)}</strong></div>`}
+      ${isCatalog(p) ? `<button type="button" class="btn btn-line" data-act="open" data-id="${esc(p.id)}">Ver y consultar</button>` : `<button type="button" class="btn btn-primary" data-act="add" data-id="${esc(p.id)}" ${out ? 'disabled' : ''}>${out ? 'Sin stock' : prodVariants(p).length ? 'Elegir opciones' : 'Agregar al carrito'}</button>`}
     </div>
   </article>`;
 }
@@ -401,6 +416,7 @@ function storeView() {
     if (!CATS[r.cat]) return state.loaded.cats ? `<div class="wrap"><div class="empty"><h3>No encontramos esa sección</h3><p>Puede que ya no exista.</p><a class="btn btn-primary" href="#/">Ir al inicio</a></div></div>` : `<div class="wrap">${skeletons(8)}</div>`;
     return listing({ title: CATS[r.cat].name, crumb: CATS[r.cat].name, list, subs });
   }
+  if (r.name === 'favs') return listing({ title: 'Mis favoritos', crumb: 'Favoritos', list: ps.filter(p => isFav(p.id)) });
   if (r.name === 'offers') return heroHTML() + listing({ title: 'Ofertas', crumb: 'Ofertas', list: ps.filter(onOffer) });
   return storeHome();
 }
@@ -413,7 +429,7 @@ function showSugg() {
   if (!q || state.route.name === 'admin') return hideSugg();
   const res = searchProducts(q, activeProducts()).slice(0, 6);
   if (!res.length) { u.innerHTML = `<li class="sugg-none">No encontramos “${esc(q)}”. Probá con otra palabra.</li>`; u.hidden = false; return; }
-  u.innerHTML = res.map(p => `<li><button type="button" data-act="sugg" data-id="${esc(p.id)}"><img src="${esc(imgOf(p))}" alt=""><span class="sg-t">${esc(p.name)}</span><span class="sg-p">${stockOf(p) <= 0 ? "Sin stock" : money(p.price)}</span></button></li>`).join('');
+  u.innerHTML = res.map(p => `<li><button type="button" data-act="sugg" data-id="${esc(p.id)}"><img src="${esc(imgOf(p))}" alt=""><span class="sg-t">${esc(p.name)}</span><span class="sg-p">${isCatalog(p) ? (priceHidden(p) ? "Consultar" : money(p.price)) : stockOf(p) <= 0 ? "Sin stock" : money(p.price)}</span></button></li>`).join('');
   u.hidden = false;
 }
 
@@ -435,11 +451,12 @@ function renderChrome() {
   applyBrand(s);
   const lg = $('#logoImg'); lg.hidden = !s.logo; if (s.logo) lg.src = s.logo;
   $('.top .logo-mark').hidden = $('.top .js-name').hidden = !!s.logo;
-  const r = state.route, cur = state.q ? '' : (r.name === 'cat' ? r.cat : r.name === 'offers' ? 'ofertas' : r.name === 'page' ? r.page : 'home');
+  const r = state.route, cur = state.q ? '' : (r.name === 'cat' ? r.cat : r.name === 'offers' ? 'ofertas' : r.name === 'favs' ? 'favs' : r.name === 'page' ? r.page : 'home');
   const shop = cur === 'ofertas' || !!CATS[cur];
   $('#catNav ul').innerHTML =
     `<li><a href="#/" ${cur === 'home' ? 'aria-current="page"' : ''}>Inicio</a></li>` +
     `<li class="dd"><details><summary ${shop ? 'class="cur"' : ''}>Tienda</summary><ul>${Object.entries(CATS).map(([k, c]) => `<li><a href="#/c/${esc(k)}" ${cur === k ? 'aria-current="page"' : ''}>${esc(c.name)}</a></li>`).join('')}<li><a class="hot" href="#/ofertas" ${cur === 'ofertas' ? 'aria-current="page"' : ''}>Ofertas</a></li></ul></details></li>` +
+    (favs().length ? `<li><a href="#/favoritos" ${cur === 'favs' ? 'aria-current="page"' : ''}>♥ Favoritos (${favs().length})</a></li>` : '') +
     `<li><a href="#/servicios" ${cur === 'servicios' ? 'aria-current="page"' : ''}>Servicios</a></li>` +
     `<li><a href="#/contacto" ${cur === 'contacto' ? 'aria-current="page"' : ''}>Contacto</a></li>`;
   const sv = (id, url) => { const a = $(id); const ok = /^https?:\/\//i.test(url || ''); a.hidden = !ok; if (ok) a.href = url; };
@@ -479,16 +496,17 @@ function openProduct(id) {
   const stock = st <= 0 ? `<p class="stock none">Sin stock por el momento</p>${contactNum() ? `<p><a class="btn btn-line btn-sm" target="_blank" rel="noopener" href="${waLink('Hola, quiero consultar cuándo vuelve a haber stock de: ' + p.name)}">Consultar disponibilidad por WhatsApp</a></p>` : ''}` : st <= 5 ? `<p class="stock low">Quedan ${st} unidades</p>` : '<p class="stock">Disponible</p>';
   const specs = String(p.specs || '').split('\n').map(s => s.trim()).filter(Boolean);
   $('#dlgProduct').innerHTML = `<button type="button" class="dlg-x" data-act="closeDlg" aria-label="Cerrar">×</button>
-    <div class="pd"><div class="pd-img ${st <= 0 ? 'is-out' : ''}" style="--tint:${c.tint}"><img id="pdMain" src="${esc(imgs[0])}" alt="${esc(p.name)}">${offer ? `<span class="tag">-${pct(p)}%</span>` : ''}
+    <div class="pd"><div class="pd-img ${st <= 0 ? 'is-out' : ''}" style="--tint:${c.tint}">${heartBtn(p)}<img id="pdMain" src="${esc(imgs[0])}" alt="${esc(p.name)}">${offer ? `<span class="tag">-${pct(p)}%</span>` : ''}
       ${imgs.length > 1 ? `<div class="thumbs" role="group" aria-label="Fotos del producto">${imgs.map((u, i) => `<button type="button" data-act="gal" data-id="${esc(p.id)}" data-i="${i}" aria-label="Ver foto ${i + 1}" aria-current="${i === 0}"><img src="${esc(u)}" alt=""></button>`).join('')}</div>` : ''}</div>
     <div class="pd-b"><p class="card-meta">${esc([p.brand, p.sub].filter(Boolean).join(' · ') || c.name)}</p><h2>${esc(p.name)}</h2>
-      <div class="pd-price"><strong>${money(p.price)}</strong>${offer ? `<s>${money(p.oldPrice)}</s>` : ''}</div>${stock}
+      ${priceHidden(p) ? '<div class="pd-price"><strong class="ask">Consultar precio</strong></div>' : `<div class="pd-price"><strong>${money(p.price)}</strong>${offer ? `<s>${money(p.oldPrice)}</s>` : ''}</div>`}${isCatalog(p) ? '' : stock}
       ${p.description ? `<p class="muted">${esc(p.description)}</p>` : ''}
       ${specs.length ? `<ul class="specs">${specs.map(s => `<li>${esc(s)}</li>`).join('')}</ul>` : ''}
-      ${prodVariants(p).map((g, gi) => `<fieldset class="vgrp" data-g="${esc(g.name)}"><legend>${esc(g.name)}</legend><div class="vopts">${g.options.map(o => `<label><input type="radio" name="v${gi}" value="${esc(o)}"><span>${esc(o)}</span></label>`).join('')}</div></fieldset>`).join('')}
+      ${isCatalog(p) ? `<p class="note-cat">Este producto se consulta y se compra en el local.</p>${contactNum() ? `<a class="btn btn-primary" target="_blank" rel="noopener" href="${consultLink(p)}">Consultar por WhatsApp</a>` : `<p class="muted">Consultanos en el local${S().address ? ': ' + esc(S().address) : ''}.</p>`}` : `${prodVariants(p).map((g, gi) => `<fieldset class="vgrp" data-g="${esc(g.name)}"><legend>${esc(g.name)}</legend><div class="vopts">${g.options.map(o => `<label><input type="radio" name="v${gi}" value="${esc(o)}"><span>${esc(o)}</span></label>`).join('')}</div></fieldset>`).join('')}
       <div class="buy"><div class="qty" role="group" aria-label="Cantidad"><button type="button" data-act="pdMinus" aria-label="Menos">−</button><output id="pdQ" aria-live="polite">1</output><button type="button" data-act="pdPlus" aria-label="Más">+</button></div>
-      <button type="button" class="btn btn-primary" data-act="pdAdd" data-id="${esc(p.id)}" ${st <= 0 ? 'disabled' : ''}>Agregar al carrito</button></div>
-      <button type="button" class="btn btn-line btn-sm share" data-act="share" data-id="${esc(p.id)}">Compartir este producto</button></div></div>`;
+      <button type="button" class="btn btn-primary" data-act="pdAdd" data-id="${esc(p.id)}" ${st <= 0 ? 'disabled' : ''}>Agregar al carrito</button></div>`}
+      <button type="button" class="btn btn-line btn-sm share" data-act="share" data-id="${esc(p.id)}">Compartir este producto</button></div></div>
+    ${(() => { const rel = activeProducts().filter(x => x.id !== p.id && x.category === p.category).sort((a, b) => (stockOf(a) <= 0) - (stockOf(b) <= 0)).slice(0, 4); return rel.length ? `<section class="related"><h3>También te puede interesar</h3><div class="rel-grid">${rel.map(x => `<button type="button" class="rel" data-act="open" data-id="${esc(x.id)}"><img loading="lazy" src="${esc(imgOf(x))}" alt=""><span>${esc(x.name)}</span><b>${priceHidden(x) ? 'Consultar' : money(x.price)}</b></button>`).join('')}</div></section>` : ''; })()}`;
   const d = $('#dlgProduct');
   if (!d.open) d.showModal();
   d.scrollTop = 0;
@@ -514,7 +532,7 @@ function renderCart() {
   const d = $('#dlgCart'), lines = cartLines(), total = cartTotal();
   const head = (t, back) => `<div class="dr-h">${back ? `<button type="button" class="btn btn-line btn-sm" data-act="cartBack">Volver</button>` : `<h2>${t}</h2>`}<button type="button" class="dlg-x x" data-act="closeDlg" aria-label="Cerrar">×</button></div>`;
   if (state.cartStep === 'done') {
-    d.innerHTML = head('Pedido') + `<div class="dr-body"><div class="done"><div class="ok" aria-hidden="true">✓</div><h3>¡Recibimos tu pedido!</h3><p>Te escribimos por WhatsApp para coordinar el pago y la entrega.</p><span class="code">${esc(state.doneCode)}</span><p class="note" style="margin-top:14px">Guardá este código: con él podés ver el estado de tu pedido.</p><p><a class="btn btn-line btn-sm" href="#/pedido/${esc(state.doneCode)}" data-act="closeDlg">Seguir mi pedido</a></p>${state.dupNote ? '<p class="note">Ya habíamos recibido este pedido, no hace falta enviarlo de nuevo.</p>' : ''}</div></div><div class="dr-f"><button type="button" class="btn btn-primary" data-act="closeDlg">Seguir mirando productos</button></div>`;
+    d.innerHTML = head('Pedido') + `<div class="dr-body"><div class="done"><div class="ok" aria-hidden="true">✓</div><h3>¡Recibimos tu pedido!</h3><p>Te escribimos por WhatsApp para coordinar el pago y la entrega.</p><span class="code">${esc(state.doneCode)}</span>${S().transferInfo && /transfer/i.test(state.donePay || '') ? `<div class="xfer"><b>Datos para la transferencia</b><p>${esc(S().transferInfo).replace(/\n/g, '<br>')}</p></div>` : ''}<p class="note" style="margin-top:14px">Guardá este código: con él podés ver el estado de tu pedido.</p><p><a class="btn btn-line btn-sm" href="#/pedido/${esc(state.doneCode)}" data-act="closeDlg">Seguir mi pedido</a></p>${state.dupNote ? '<p class="note">Ya habíamos recibido este pedido, no hace falta enviarlo de nuevo.</p>' : ''}</div></div><div class="dr-f"><button type="button" class="btn btn-primary" data-act="closeDlg">Seguir mirando productos</button></div>`;
     return;
   }
   if (!lines.length) {
@@ -529,6 +547,7 @@ function renderCart() {
       <div class="field"><label for="f-phone">Teléfono o WhatsApp</label><input class="in" id="f-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" required value="${esc(v.phone)}"><small>Te contactamos a este número para confirmar el pedido.</small></div>
       <div class="field"><span>¿Cómo lo recibís?</span><div class="radios"><label><input type="radio" name="delivery" value="retiro" ${v.delivery !== 'envio' ? 'checked' : ''}> Retiro en el local</label><label><input type="radio" name="delivery" value="envio" ${v.delivery === 'envio' ? 'checked' : ''}> Envío a domicilio</label></div></div>
       <div class="field" id="payBox">${payHTML(v.delivery === 'envio' ? 'envio' : 'retiro', v.payment)}</div>
+      <div class="field" id="pickupField" ${v.delivery === 'envio' || !S().askPickup ? 'hidden' : ''}><span>¿Cuándo pasás a retirar?</span><div class="pk"><select class="in" name="pickupDay" aria-label="Día de retiro">${pickupDays().map(d => `<option value="${esc(d)}" ${v.pickupDay === d ? 'selected' : ''}>${esc(d)}</option>`).join('')}</select><input class="in" type="time" name="pickupTime" aria-label="Hora de retiro" value="${esc(v.pickupTime || '')}"></div>${(S().hours || []).length ? `<small class="muted">Horarios: ${esc(S().hours.join(' · '))}</small>` : ''}</div>
       <div class="field" id="zoneField" ${v.delivery === 'envio' ? '' : 'hidden'}><label for="f-zone">Localidad</label><select class="in" id="f-zone" name="zone">${zones().map(z => `<option value="${esc(z.name)}" ${(v.zone || zones()[0]?.name) === z.name ? 'selected' : ''}>${esc(z.name)}${S().showShipping === false ? '' : ' — ' + (Number(z.cost) > 0 ? money(z.cost) : 'sin costo de envío')}</option>`).join('')}<option value="${OTRA}" ${v.zone === OTRA ? 'selected' : ''}>Otra localidad (costo a coordinar)</option></select></div>
       <div class="field" id="addrField" ${v.delivery === 'envio' ? '' : 'hidden'}><label for="f-addr">Dirección de entrega</label><input class="in" id="f-addr" name="address" autocomplete="street-address" value="${esc(v.address)}"></div>
       <div class="hp" aria-hidden="true"><label>No completar este campo<input name="website" tabindex="-1" autocomplete="off"></label></div>
@@ -559,21 +578,36 @@ function ckTotals(c) {
 function updateCheckout(form) {
   const c = readCheckout(form); state.form = { ...(state.form || {}), ...c };
   $('#addrField').hidden = $('#zoneField').hidden = c.delivery !== 'envio';
+  $('#pickupField').hidden = c.delivery === 'envio' || !S().askPickup;
   $('#ckTotals').innerHTML = ckTotals(c);
   if (state.payFor !== c.delivery) { state.payFor = c.delivery; const keep = payList(c.delivery).includes(c.payment) ? c.payment : ''; $('#payBox').innerHTML = payHTML(c.delivery, keep); }
 }
 const clean = l => (Array.isArray(l) ? l : []).map(x => String(x).trim()).filter(Boolean);
 /* Medios de pago según cómo recibe el cliente: los comunes + los solo-retiro o solo-envío */
+function pickupDays() {
+  const out = [], fmt = new Intl.DateTimeFormat('es-UY', { weekday: 'long', day: '2-digit', month: '2-digit' });
+  for (let i = 0; i < 7; i++) { const d = new Date(Date.now() + i * 864e5); const t = fmt.format(d); out.push((i === 0 ? 'Hoy' : i === 1 ? 'Mañana' : t.charAt(0).toUpperCase() + t.slice(1)) + (i < 2 ? ' (' + t + ')' : '')); }
+  return out;
+}
 const payList = delivery => [...new Set([...clean(state.settings.payMethods), ...clean(delivery === 'envio' ? state.settings.payDelivery : state.settings.payPickup)])];
 const payHTML = (delivery, sel) => { const l = payList(delivery); return l.length ? `<span>¿Cómo querés pagar?</span><div class="radios" role="radiogroup">${l.map(m => `<label><input type="radio" name="payment" value="${esc(m)}" ${sel === m ? 'checked' : ''}> ${esc(m)}</label>`).join('')}</div>` : ''; };
 function readCheckout(form) {
   const f = new FormData(form);
-  return { name: String(f.get('name') || '').trim(), phone: String(f.get('phone') || '').trim(), delivery: f.get('delivery') === 'envio' ? 'envio' : 'retiro', address: String(f.get('address') || '').trim(), zone: String(f.get('zone') || ''), hp: String(f.get('website') || ''), remember: f.get('remember') === 'on', payment: String(f.get('payment') || '').trim(), note: String(f.get('note') || '').trim() };
+  return { name: String(f.get('name') || '').trim(), phone: String(f.get('phone') || '').trim(), delivery: f.get('delivery') === 'envio' ? 'envio' : 'retiro', address: String(f.get('address') || '').trim(), zone: String(f.get('zone') || ''), pickupDay: String(f.get('pickupDay') || ''), pickupTime: String(f.get('pickupTime') || ''), hp: String(f.get('website') || ''), remember: f.get('remember') === 'on', payment: String(f.get('payment') || '').trim(), note: String(f.get('note') || '').trim() };
 }
 function waText(order, code) {
   const l = order.items.map(i => `• ${i.qty} x ${i.name} — ${money(i.price * i.qty)}`).join('\n');
   const c = order.customer;
-  return `Hola, quiero hacer este pedido (${code}):\n${l}\n${order.shipping ? 'Envío: ' + money(order.shipping) + '\n' : ''}${order.discount ? 'Descuento (' + order.coupon + '): -' + money(order.discount) + '\n' : ''}Total: ${money(order.total)}\n\nNombre: ${c.name}\nTeléfono: ${c.phone}\n${c.payment ? 'Pago: ' + c.payment + '\n' : ''}${c.delivery === 'envio' ? 'Envío a: ' + c.address + (c.zone ? ' (' + c.zone + ')' : '') : 'Retiro en el local'}${c.note ? '\nComentarios: ' + c.note : ''}`;
+  return `Hola, quiero hacer este pedido (${code}):\n${l}\n${order.shipping ? 'Envío: ' + money(order.shipping) + '\n' : ''}${order.discount ? 'Descuento (' + order.coupon + '): -' + money(order.discount) + '\n' : ''}Total: ${money(order.total)}\n\nNombre: ${c.name}\nTeléfono: ${c.phone}\n${c.payment ? 'Pago: ' + c.payment + '\n' : ''}${c.delivery === 'envio' ? 'Envío a: ' + c.address + (c.zone ? ' (' + c.zone + ')' : '') : 'Retiro en el local' + (c.pickup ? ': ' + c.pickup : '')}${c.note ? '\nComentarios: ' + c.note : ''}`;
+}
+/* Aviso por correo con EmailJS (gratis, sin servidor). Se configura en Ajustes > Aviso por email. */
+async function notifyEmail(order, code, test) {
+  const s = state.settings;
+  if (!s.emailServiceId || !s.emailTemplateId || !s.emailPublicKey) { if (test) throw new Error('Completá los tres datos de EmailJS.'); return; }
+  const c = order.customer;
+  const params = { subject: `${test ? 'PRUEBA · ' : ''}Nuevo pedido ${code} · ${s.storeName}`, order_code: code, store_name: s.storeName, customer_name: c.name, customer_phone: c.phone, total: money(order.total), message: waText(order, code).replace(/^Hola, quiero hacer este pedido/, 'Nuevo pedido') };
+  const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ service_id: s.emailServiceId, template_id: s.emailTemplateId, user_id: s.emailPublicKey, template_params: params }) });
+  if (!res.ok) { const t = await res.text().catch(() => ''); if (test) throw new Error('EmailJS respondió ' + res.status + ': ' + t.slice(0, 120)); console.warn('EmailJS', res.status, t); }
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function submitOrder(form) {
@@ -589,6 +623,9 @@ async function submitOrder(form) {
   if (!lines.length) return fail('Tu carrito está vacío.');
   if (lines.reduce((a, l) => a + l.qty, 0) > maxUnits()) return fail(`Cada pedido admite hasta ${maxUnits()} unidades. Quitá algunas o escribinos por WhatsApp.`);
 
+  // Retiro: día y hora (si el negocio lo pide)
+  if (c.delivery === 'retiro' && S().askPickup) c.pickup = [c.pickupDay, c.pickupTime].filter(Boolean).join(' · ').slice(0, 60);
+  delete c.pickupDay; delete c.pickupTime; if (!c.pickup) delete c.pickup;
   // Envío: localidad y costo
   if (c.delivery === 'envio') { if (c.zone === OTRA || !zones().some(z => z.name === c.zone)) c.zone = c.zone === OTRA || !zones().length ? 'Otra localidad (a coordinar)' : zones()[0].name; } else delete c.zone;
   const pr = pricing({ delivery: c.delivery, zone: c.zone }), sh = pr.sh;
@@ -605,7 +642,7 @@ async function submitOrder(form) {
   const sig = JSON.stringify([order.items.map(i => i.id + ':' + i.qty).sort(), digits(c.phone)]);
   const last = lsGet('nodo_last');
   const finish = (code, dup) => { state.sending = false; state.cart = {}; state.coupon = ''; saveCart(); state.form = null;
-    lsSet('nodo_cust', remember ? { name: c.name, phone: c.phone, address: c.address || '', zone: c.zone || '', delivery: c.delivery } : null); state.doneCode = code; state.dupNote = !!dup; state.cartStep = 'done'; renderCartBadge(); renderCart(); };
+    lsSet('nodo_cust', remember ? { name: c.name, phone: c.phone, address: c.address || '', zone: c.zone || '', delivery: c.delivery } : null); state.doneCode = code; state.donePay = c.payment || ''; state.dupNote = !!dup; state.cartStep = 'done'; renderCartBadge(); renderCart(); };
   if (last && last.sig === sig && Date.now() - last.at < 180000) return finish(last.code, true);
   // Campo trampa que las personas no ven: si viene completo es un robot
   if (hp) { state.sending = true; renderCart(); await sleep(800); return finish('P-' + Math.random().toString(36).toUpperCase().slice(2, 9)); }
@@ -617,6 +654,7 @@ async function submitOrder(form) {
     await sleep(Math.max(0, 1500 - (Date.now() - state.checkoutAt))); // evita envíos instantáneos de robots
     const code = await DB.createOrder(order);
     lsSet('nodo_last', { sig, code, at: Date.now() });
+    notifyEmail(order, code); // aviso por correo al dueño (si está configurado); no frena el pedido
     finish(code, false);
     if (win) win.location.href = `https://wa.me/${digits(state.settings.waNumber)}?text=${encodeURIComponent(waText(order, code))}`;
   } catch (e) {
@@ -640,6 +678,7 @@ document.addEventListener('click', e => {
     else if (a === 'heroNext') setHero(state.hero + 1);
     else if (a === 'gal') { const p = activeProducts().find(x => x.id === id); if (p) { $('#pdMain').src = productImages(p)[+t.dataset.i]; $$('.thumbs button').forEach(b => b.setAttribute('aria-current', b === t)); } }
     else if (a === 'share') shareProduct(id);
+    else if (a === 'fav') { toggleFav(id); }
     else if (a === 'sugg') { hideSugg(); $('#q').value = ''; state.q = ''; render(); openProduct(id); }
     else if (a === 'sub') { state.sub = t.dataset.v; render(); }
     else if (a === 'clear') { state.sub = ''; state.onlyOffers = false; state.inStock = false; state.q = ''; $('#q').value = ''; render(); }
@@ -726,6 +765,8 @@ function loadOrders() {
     if (!first && l.length > state.orders.length) toast('Llegó un pedido nuevo', { label: 'Ver', fn: () => { state.admin.tab = 'orders'; location.hash = '#/admin'; render(); } });
     first = false; state.orders = l; softRender();
   });
+  state.adminsUnsub && state.adminsUnsub();
+  state.adminsUnsub = DB.subscribe('admins', l => { state.admins = l; if (state.admin.tab === 'admins') softRender(); }, () => { /* sin permiso: no es admin */ });
 }
 /* Re-render que no interrumpe a quien está escribiendo en el panel */
 let pendingRender = false;
@@ -753,6 +794,11 @@ function reportErr(msg) {
 }
 window.addEventListener('error', e => reportErr(e.message));
 window.addEventListener('unhandledrejection', e => reportErr(e.reason && e.reason.message || e.reason));
+if (window.NEGOCIO && window.NEGOCIO.demo) { // cinta de demostración (solo en la copia de demo)
+  const bar = document.createElement('div'); bar.className = 'demo-bar';
+  bar.innerHTML = 'Tienda de <b>demostración</b>: los datos viven solo en tu navegador. Probá el panel en <a href="#/admin">#/admin</a> con usuario <b>user</b> y contraseña <b>123456</b>.';
+  document.body.prepend(bar);
+}
 (async function init() {
   state.route = parseHash();
   render();
@@ -765,7 +811,7 @@ window.addEventListener('unhandledrejection', e => reportErr(e.reason && e.reaso
   loadPublic();
   DB.auth.onChange(u => {
     state.user = u; state.authReady = true;
-    if (u) loadOrders(); else { state.ordersUnsub && state.ordersUnsub(); state.ordersUnsub = null; state.orders = []; }
+    if (u) loadOrders(); else { state.ordersUnsub && state.ordersUnsub(); state.ordersUnsub = null; state.orders = []; state.adminsUnsub && state.adminsUnsub(); state.adminsUnsub = null; state.admins = []; }
     if (state.route.name === 'admin') render();
   });
 })();

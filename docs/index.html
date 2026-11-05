@@ -489,6 +489,25 @@ body.is-admin .top, body.is-admin .catnav, body.is-admin .perks, body.is-admin .
 .note-cat{background:#f3f5f8;border-radius:10px;padding:10px 12px;color:#445;margin:12px 0}
 .ask{font-size:.95rem;color:#5b6677}
 .note-cat{background:#f3f5f8;border-radius:10px;padding:10px 12px;color:#445;margin:12px 0}
+.stats{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin-bottom:16px}
+.stat{background:#fff;border:1px solid #e3e7ee;border-radius:14px;padding:14px 16px;display:grid;gap:2px}
+.stat small{color:#5b6677}.stat b{font-size:1.5rem}.stat span{color:#5b6677;font-size:.85rem}.stat.hot{border-color:#e0a100;background:#fff9e6}
+.stat-cols{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.plain{list-style:none;padding:0;margin:0}.plain li{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #eef0f4}
+ol.plain{counter-reset:n}ol.plain li::before{counter-increment:n;content:counter(n)'.';color:#8a93a1;margin-right:8px}ol.plain li{justify-content:flex-start}ol.plain li b{margin-left:auto}
+.bad{color:#b91c1c}
+.lnk{background:none;border:0;padding:0;color:#0b5cff;text-decoration:underline;cursor:pointer;font:inherit;text-align:left}
+.card{position:relative}
+.heart{position:absolute;top:8px;right:8px;z-index:2;width:36px;height:36px;border-radius:50%;border:0;background:rgba(255,255,255,.92);display:grid;place-items:center;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+.heart svg{fill:none;stroke:#6b7482;stroke-width:2}.heart[aria-pressed="true"] svg{fill:#d6203a;stroke:#d6203a}
+.pd-img{position:relative}.pd-img .heart{top:10px;right:10px}
+.related{margin-top:22px;padding:0 22px 22px}.related h3{font-size:1rem;margin-bottom:10px}
+.rel-grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
+.rel{background:#fff;border:1px solid #e3e7ee;border-radius:12px;padding:8px;text-align:left;cursor:pointer;display:grid;gap:4px;font:inherit}
+.rel img{width:100%;aspect-ratio:1;object-fit:contain;background:#f3f6fb;border-radius:8px}.rel span{font-size:.82rem;line-height:1.25;color:#333}.rel b{font-size:.9rem}
+.pk{display:flex;gap:8px;flex-wrap:wrap}.pk select{flex:2;min-width:150px}.pk input{flex:1;min-width:110px}
+.xfer{background:#f3f6fb;border-radius:12px;padding:12px 14px;margin:14px 0;text-align:left}.xfer p{margin:6px 0 0;line-height:1.5}
+.demo-bar{background:#111827;color:#fff;font-size:.82rem;text-align:center;padding:8px 12px;line-height:1.4}.demo-bar a{color:#ffd21f}
 
 </style>
 </head>
@@ -718,6 +737,10 @@ const DEFAULT_SETTINGS = {
   showShipping: true,
   freeShippingFrom: 0,
   catalogAll: false,
+  askPickup: false,
+  cloudName: '',
+  cloudPreset: '',
+  transferInfo: '',
   emailServiceId: '',
   emailTemplateId: '',
   emailPublicKey: '',
@@ -861,6 +884,7 @@ function createDemoDB() {
       const st = read('orderStatus'); st.push({ id: code, status: 'nuevo', updatedAt: Date.now() }); lsSet(key('orderStatus'), st);
       return code;
     },
+    async createAdmin() { throw new Error('En modo demo no se pueden crear usuarios reales. Conectá Firebase para usar esta función.'); },
     async getOrderStatus(code) {
       const d = read('orderStatus').find(x => x.id === code);
       return d ? { status: d.status, updatedAt: d.updatedAt } : null;
@@ -928,6 +952,20 @@ async function createFirebaseDB() {
     async getOrderStatus(code) {
       const d = await fsM.getDoc(fsM.doc(fs, 'orderStatus', code));
       return d.exists() ? d.data() : null;
+    },
+    async createAdmin(username, password) {
+      const email = userToEmail(username);
+      // El usuario se crea con una segunda conexión para no cerrar la sesión actual
+      const sec = appM.initializeApp(FB_CFG, 'sec' + Date.now()), secAuth = authM.getAuth(sec);
+      let existed = false;
+      try { await authM.createUserWithEmailAndPassword(secAuth, email, password); }
+      catch (e) {
+        if (e && e.code === 'auth/email-already-in-use') existed = true;
+        else if (e && /operation-not-allowed|admin-restricted/.test(e.code || '')) throw new Error('Firebase no permite crear usuarios desde la tienda. Activá el registro en Authentication > Configuración > Acciones del usuario, o creá el usuario a mano en Firebase y volvé a intentar.');
+        else throw new Error(authMsg(e));
+      } finally { try { await authM.signOut(secAuth); } catch { /* nada */ } }
+      await fsM.setDoc(fsM.doc(fs, 'admins', email), { email, createdAt: Date.now() });
+      return { email, existed };
     },
     auth: {
       onChange(cb) { authM.onAuthStateChanged(au, cb); },
@@ -1043,6 +1081,7 @@ const state = {
   route: { name: 'home' }, q: '', sub: '', sort: 'rel', onlyOffers: false, inStock: false,
   hero: 0, fsError: false, user: null, authReady: false, loginErr: '',
   admin: { tab: 'products', q: '', cat: '' },
+  admins: [],
   track: { code: '', res: null, err: '', loading: false, auto: '' }, checkoutAt: 0, deepDone: '', prevHash: '#/'
 };
 let DB = null;
@@ -1131,6 +1170,15 @@ function addToCart(key, n = 1) {
   toast('Agregado al carrito', { label: 'Ver carrito', fn: openCart });
 }
 /* Solo catálogo: no se vende online, se consulta por WhatsApp. Puede ser por producto o para toda la tienda. */
+const favs = () => { const l = lsGet('nodo_fav'); return Array.isArray(l) ? l : []; };
+const isFav = id => favs().includes(id);
+const heartBtn = p => `<button type="button" class="heart" data-act="fav" data-id="${esc(p.id)}" aria-pressed="${isFav(p.id)}" aria-label="${isFav(p.id) ? 'Quitar de favoritos' : 'Guardar en favoritos'}"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3 5 6.2 5c1.9 0 3.2 1 3.8 2 .6-1 1.900-2 3.800-2 3.200 0 5.300 3.200 3.800 6.700C19.500 16.400 12 21 12 21Z"/></svg></button>`;
+function toggleFav(id) {
+  const l = favs(), i = l.indexOf(id); if (i >= 0) l.splice(i, 1); else l.push(id);
+  lsSet('nodo_fav', l);
+  $$(`[data-act=fav][data-id="${CSS.escape(id)}"]`).forEach(b => { b.setAttribute('aria-pressed', isFav(id)); b.setAttribute('aria-label', isFav(id) ? 'Quitar de favoritos' : 'Guardar en favoritos'); });
+  renderChrome(); if (state.route.name === 'favs') render();
+}
 const isCatalog = p => !!(S().catalogAll || p.catalogOnly);
 const priceHidden = p => isCatalog(p) && !!p.hidePrice;
 const consultLink = p => waLink('Hola, quiero consultar por: ' + p.name);
@@ -1171,6 +1219,7 @@ function parseHash() {
   if (a === 'admin') return { name: 'admin' };
   if (a === 'c' && b) return { name: 'cat', cat: b };
   if (a === 'ofertas') return { name: 'offers' };
+  if (a === 'favoritos') return { name: 'favs' };
   if (a === 'p' && b) return { name: 'home', open: decodeURIComponent(b) };
   if (['contacto', 'servicios', 'condiciones', 'privacidad'].includes(a)) return { name: 'page', page: a };
   if (a === 'pedido') return { name: 'track', code: decodeURIComponent(b || '').toUpperCase() };
@@ -1186,7 +1235,7 @@ window.addEventListener('hashchange', () => {
 /* ───────── Piezas de la tienda ───────── */
 function card(p) {
   const offer = onOffer(p), out = stockOf(p) <= 0, c = catOf(p);
-  return `<article class="card ${out ? 'is-out' : ''}">
+  return `<article class="card ${out ? 'is-out' : ''}">${heartBtn(p)}
     <button type="button" class="card-img" data-act="open" data-id="${esc(p.id)}" style="--tint:${c.tint}" aria-label="Ver ${esc(p.name)}">
       <img loading="lazy" src="${esc(imgOf(p))}" alt="" class="${(p.images && p.images[0]) || p.image ? 'photo' : ''}">
       ${offer && !priceHidden(p) ? `<span class="tag">-${pct(p)}%</span>` : ''}${out && !isCatalog(p) ? '<span class="out">Sin stock</span>' : ''}
@@ -1355,6 +1404,7 @@ function storeView() {
     if (!CATS[r.cat]) return state.loaded.cats ? `<div class="wrap"><div class="empty"><h3>No encontramos esa sección</h3><p>Puede que ya no exista.</p><a class="btn btn-primary" href="#/">Ir al inicio</a></div></div>` : `<div class="wrap">${skeletons(8)}</div>`;
     return listing({ title: CATS[r.cat].name, crumb: CATS[r.cat].name, list, subs });
   }
+  if (r.name === 'favs') return listing({ title: 'Mis favoritos', crumb: 'Favoritos', list: ps.filter(p => isFav(p.id)) });
   if (r.name === 'offers') return heroHTML() + listing({ title: 'Ofertas', crumb: 'Ofertas', list: ps.filter(onOffer) });
   return storeHome();
 }
@@ -1389,11 +1439,12 @@ function renderChrome() {
   applyBrand(s);
   const lg = $('#logoImg'); lg.hidden = !s.logo; if (s.logo) lg.src = s.logo;
   $('.top .logo-mark').hidden = $('.top .js-name').hidden = !!s.logo;
-  const r = state.route, cur = state.q ? '' : (r.name === 'cat' ? r.cat : r.name === 'offers' ? 'ofertas' : r.name === 'page' ? r.page : 'home');
+  const r = state.route, cur = state.q ? '' : (r.name === 'cat' ? r.cat : r.name === 'offers' ? 'ofertas' : r.name === 'favs' ? 'favs' : r.name === 'page' ? r.page : 'home');
   const shop = cur === 'ofertas' || !!CATS[cur];
   $('#catNav ul').innerHTML =
     `<li><a href="#/" ${cur === 'home' ? 'aria-current="page"' : ''}>Inicio</a></li>` +
     `<li class="dd"><details><summary ${shop ? 'class="cur"' : ''}>Tienda</summary><ul>${Object.entries(CATS).map(([k, c]) => `<li><a href="#/c/${esc(k)}" ${cur === k ? 'aria-current="page"' : ''}>${esc(c.name)}</a></li>`).join('')}<li><a class="hot" href="#/ofertas" ${cur === 'ofertas' ? 'aria-current="page"' : ''}>Ofertas</a></li></ul></details></li>` +
+    (favs().length ? `<li><a href="#/favoritos" ${cur === 'favs' ? 'aria-current="page"' : ''}>♥ Favoritos (${favs().length})</a></li>` : '') +
     `<li><a href="#/servicios" ${cur === 'servicios' ? 'aria-current="page"' : ''}>Servicios</a></li>` +
     `<li><a href="#/contacto" ${cur === 'contacto' ? 'aria-current="page"' : ''}>Contacto</a></li>`;
   const sv = (id, url) => { const a = $(id); const ok = /^https?:\/\//i.test(url || ''); a.hidden = !ok; if (ok) a.href = url; };
@@ -1433,7 +1484,7 @@ function openProduct(id) {
   const stock = st <= 0 ? `<p class="stock none">Sin stock por el momento</p>${contactNum() ? `<p><a class="btn btn-line btn-sm" target="_blank" rel="noopener" href="${waLink('Hola, quiero consultar cuándo vuelve a haber stock de: ' + p.name)}">Consultar disponibilidad por WhatsApp</a></p>` : ''}` : st <= 5 ? `<p class="stock low">Quedan ${st} unidades</p>` : '<p class="stock">Disponible</p>';
   const specs = String(p.specs || '').split('\n').map(s => s.trim()).filter(Boolean);
   $('#dlgProduct').innerHTML = `<button type="button" class="dlg-x" data-act="closeDlg" aria-label="Cerrar">×</button>
-    <div class="pd"><div class="pd-img ${st <= 0 ? 'is-out' : ''}" style="--tint:${c.tint}"><img id="pdMain" src="${esc(imgs[0])}" alt="${esc(p.name)}">${offer ? `<span class="tag">-${pct(p)}%</span>` : ''}
+    <div class="pd"><div class="pd-img ${st <= 0 ? 'is-out' : ''}" style="--tint:${c.tint}">${heartBtn(p)}<img id="pdMain" src="${esc(imgs[0])}" alt="${esc(p.name)}">${offer ? `<span class="tag">-${pct(p)}%</span>` : ''}
       ${imgs.length > 1 ? `<div class="thumbs" role="group" aria-label="Fotos del producto">${imgs.map((u, i) => `<button type="button" data-act="gal" data-id="${esc(p.id)}" data-i="${i}" aria-label="Ver foto ${i + 1}" aria-current="${i === 0}"><img src="${esc(u)}" alt=""></button>`).join('')}</div>` : ''}</div>
     <div class="pd-b"><p class="card-meta">${esc([p.brand, p.sub].filter(Boolean).join(' · ') || c.name)}</p><h2>${esc(p.name)}</h2>
       ${priceHidden(p) ? '<div class="pd-price"><strong class="ask">Consultar precio</strong></div>' : `<div class="pd-price"><strong>${money(p.price)}</strong>${offer ? `<s>${money(p.oldPrice)}</s>` : ''}</div>`}${isCatalog(p) ? '' : stock}
@@ -1442,7 +1493,8 @@ function openProduct(id) {
       ${isCatalog(p) ? `<p class="note-cat">Este producto se consulta y se compra en el local.</p>${contactNum() ? `<a class="btn btn-primary" target="_blank" rel="noopener" href="${consultLink(p)}">Consultar por WhatsApp</a>` : `<p class="muted">Consultanos en el local${S().address ? ': ' + esc(S().address) : ''}.</p>`}` : `${prodVariants(p).map((g, gi) => `<fieldset class="vgrp" data-g="${esc(g.name)}"><legend>${esc(g.name)}</legend><div class="vopts">${g.options.map(o => `<label><input type="radio" name="v${gi}" value="${esc(o)}"><span>${esc(o)}</span></label>`).join('')}</div></fieldset>`).join('')}
       <div class="buy"><div class="qty" role="group" aria-label="Cantidad"><button type="button" data-act="pdMinus" aria-label="Menos">−</button><output id="pdQ" aria-live="polite">1</output><button type="button" data-act="pdPlus" aria-label="Más">+</button></div>
       <button type="button" class="btn btn-primary" data-act="pdAdd" data-id="${esc(p.id)}" ${st <= 0 ? 'disabled' : ''}>Agregar al carrito</button></div>`}
-      <button type="button" class="btn btn-line btn-sm share" data-act="share" data-id="${esc(p.id)}">Compartir este producto</button></div></div>`;
+      <button type="button" class="btn btn-line btn-sm share" data-act="share" data-id="${esc(p.id)}">Compartir este producto</button></div></div>
+    ${(() => { const rel = activeProducts().filter(x => x.id !== p.id && x.category === p.category).sort((a, b) => (stockOf(a) <= 0) - (stockOf(b) <= 0)).slice(0, 4); return rel.length ? `<section class="related"><h3>También te puede interesar</h3><div class="rel-grid">${rel.map(x => `<button type="button" class="rel" data-act="open" data-id="${esc(x.id)}"><img loading="lazy" src="${esc(imgOf(x))}" alt=""><span>${esc(x.name)}</span><b>${priceHidden(x) ? 'Consultar' : money(x.price)}</b></button>`).join('')}</div></section>` : ''; })()}`;
   const d = $('#dlgProduct');
   if (!d.open) d.showModal();
   d.scrollTop = 0;
@@ -1468,7 +1520,7 @@ function renderCart() {
   const d = $('#dlgCart'), lines = cartLines(), total = cartTotal();
   const head = (t, back) => `<div class="dr-h">${back ? `<button type="button" class="btn btn-line btn-sm" data-act="cartBack">Volver</button>` : `<h2>${t}</h2>`}<button type="button" class="dlg-x x" data-act="closeDlg" aria-label="Cerrar">×</button></div>`;
   if (state.cartStep === 'done') {
-    d.innerHTML = head('Pedido') + `<div class="dr-body"><div class="done"><div class="ok" aria-hidden="true">✓</div><h3>¡Recibimos tu pedido!</h3><p>Te escribimos por WhatsApp para coordinar el pago y la entrega.</p><span class="code">${esc(state.doneCode)}</span><p class="note" style="margin-top:14px">Guardá este código: con él podés ver el estado de tu pedido.</p><p><a class="btn btn-line btn-sm" href="#/pedido/${esc(state.doneCode)}" data-act="closeDlg">Seguir mi pedido</a></p>${state.dupNote ? '<p class="note">Ya habíamos recibido este pedido, no hace falta enviarlo de nuevo.</p>' : ''}</div></div><div class="dr-f"><button type="button" class="btn btn-primary" data-act="closeDlg">Seguir mirando productos</button></div>`;
+    d.innerHTML = head('Pedido') + `<div class="dr-body"><div class="done"><div class="ok" aria-hidden="true">✓</div><h3>¡Recibimos tu pedido!</h3><p>Te escribimos por WhatsApp para coordinar el pago y la entrega.</p><span class="code">${esc(state.doneCode)}</span>${S().transferInfo && /transfer/i.test(state.donePay || '') ? `<div class="xfer"><b>Datos para la transferencia</b><p>${esc(S().transferInfo).replace(/\n/g, '<br>')}</p></div>` : ''}<p class="note" style="margin-top:14px">Guardá este código: con él podés ver el estado de tu pedido.</p><p><a class="btn btn-line btn-sm" href="#/pedido/${esc(state.doneCode)}" data-act="closeDlg">Seguir mi pedido</a></p>${state.dupNote ? '<p class="note">Ya habíamos recibido este pedido, no hace falta enviarlo de nuevo.</p>' : ''}</div></div><div class="dr-f"><button type="button" class="btn btn-primary" data-act="closeDlg">Seguir mirando productos</button></div>`;
     return;
   }
   if (!lines.length) {
@@ -1483,6 +1535,7 @@ function renderCart() {
       <div class="field"><label for="f-phone">Teléfono o WhatsApp</label><input class="in" id="f-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" required value="${esc(v.phone)}"><small>Te contactamos a este número para confirmar el pedido.</small></div>
       <div class="field"><span>¿Cómo lo recibís?</span><div class="radios"><label><input type="radio" name="delivery" value="retiro" ${v.delivery !== 'envio' ? 'checked' : ''}> Retiro en el local</label><label><input type="radio" name="delivery" value="envio" ${v.delivery === 'envio' ? 'checked' : ''}> Envío a domicilio</label></div></div>
       <div class="field" id="payBox">${payHTML(v.delivery === 'envio' ? 'envio' : 'retiro', v.payment)}</div>
+      <div class="field" id="pickupField" ${v.delivery === 'envio' || !S().askPickup ? 'hidden' : ''}><span>¿Cuándo pasás a retirar?</span><div class="pk"><select class="in" name="pickupDay" aria-label="Día de retiro">${pickupDays().map(d => `<option value="${esc(d)}" ${v.pickupDay === d ? 'selected' : ''}>${esc(d)}</option>`).join('')}</select><input class="in" type="time" name="pickupTime" aria-label="Hora de retiro" value="${esc(v.pickupTime || '')}"></div>${(S().hours || []).length ? `<small class="muted">Horarios: ${esc(S().hours.join(' · '))}</small>` : ''}</div>
       <div class="field" id="zoneField" ${v.delivery === 'envio' ? '' : 'hidden'}><label for="f-zone">Localidad</label><select class="in" id="f-zone" name="zone">${zones().map(z => `<option value="${esc(z.name)}" ${(v.zone || zones()[0]?.name) === z.name ? 'selected' : ''}>${esc(z.name)}${S().showShipping === false ? '' : ' — ' + (Number(z.cost) > 0 ? money(z.cost) : 'sin costo de envío')}</option>`).join('')}<option value="${OTRA}" ${v.zone === OTRA ? 'selected' : ''}>Otra localidad (costo a coordinar)</option></select></div>
       <div class="field" id="addrField" ${v.delivery === 'envio' ? '' : 'hidden'}><label for="f-addr">Dirección de entrega</label><input class="in" id="f-addr" name="address" autocomplete="street-address" value="${esc(v.address)}"></div>
       <div class="hp" aria-hidden="true"><label>No completar este campo<input name="website" tabindex="-1" autocomplete="off"></label></div>
@@ -1513,21 +1566,27 @@ function ckTotals(c) {
 function updateCheckout(form) {
   const c = readCheckout(form); state.form = { ...(state.form || {}), ...c };
   $('#addrField').hidden = $('#zoneField').hidden = c.delivery !== 'envio';
+  $('#pickupField').hidden = c.delivery === 'envio' || !S().askPickup;
   $('#ckTotals').innerHTML = ckTotals(c);
   if (state.payFor !== c.delivery) { state.payFor = c.delivery; const keep = payList(c.delivery).includes(c.payment) ? c.payment : ''; $('#payBox').innerHTML = payHTML(c.delivery, keep); }
 }
 const clean = l => (Array.isArray(l) ? l : []).map(x => String(x).trim()).filter(Boolean);
 /* Medios de pago según cómo recibe el cliente: los comunes + los solo-retiro o solo-envío */
+function pickupDays() {
+  const out = [], fmt = new Intl.DateTimeFormat('es-UY', { weekday: 'long', day: '2-digit', month: '2-digit' });
+  for (let i = 0; i < 7; i++) { const d = new Date(Date.now() + i * 864e5); const t = fmt.format(d); out.push((i === 0 ? 'Hoy' : i === 1 ? 'Mañana' : t.charAt(0).toUpperCase() + t.slice(1)) + (i < 2 ? ' (' + t + ')' : '')); }
+  return out;
+}
 const payList = delivery => [...new Set([...clean(state.settings.payMethods), ...clean(delivery === 'envio' ? state.settings.payDelivery : state.settings.payPickup)])];
 const payHTML = (delivery, sel) => { const l = payList(delivery); return l.length ? `<span>¿Cómo querés pagar?</span><div class="radios" role="radiogroup">${l.map(m => `<label><input type="radio" name="payment" value="${esc(m)}" ${sel === m ? 'checked' : ''}> ${esc(m)}</label>`).join('')}</div>` : ''; };
 function readCheckout(form) {
   const f = new FormData(form);
-  return { name: String(f.get('name') || '').trim(), phone: String(f.get('phone') || '').trim(), delivery: f.get('delivery') === 'envio' ? 'envio' : 'retiro', address: String(f.get('address') || '').trim(), zone: String(f.get('zone') || ''), hp: String(f.get('website') || ''), remember: f.get('remember') === 'on', payment: String(f.get('payment') || '').trim(), note: String(f.get('note') || '').trim() };
+  return { name: String(f.get('name') || '').trim(), phone: String(f.get('phone') || '').trim(), delivery: f.get('delivery') === 'envio' ? 'envio' : 'retiro', address: String(f.get('address') || '').trim(), zone: String(f.get('zone') || ''), pickupDay: String(f.get('pickupDay') || ''), pickupTime: String(f.get('pickupTime') || ''), hp: String(f.get('website') || ''), remember: f.get('remember') === 'on', payment: String(f.get('payment') || '').trim(), note: String(f.get('note') || '').trim() };
 }
 function waText(order, code) {
   const l = order.items.map(i => `• ${i.qty} x ${i.name} — ${money(i.price * i.qty)}`).join('\n');
   const c = order.customer;
-  return `Hola, quiero hacer este pedido (${code}):\n${l}\n${order.shipping ? 'Envío: ' + money(order.shipping) + '\n' : ''}${order.discount ? 'Descuento (' + order.coupon + '): -' + money(order.discount) + '\n' : ''}Total: ${money(order.total)}\n\nNombre: ${c.name}\nTeléfono: ${c.phone}\n${c.payment ? 'Pago: ' + c.payment + '\n' : ''}${c.delivery === 'envio' ? 'Envío a: ' + c.address + (c.zone ? ' (' + c.zone + ')' : '') : 'Retiro en el local'}${c.note ? '\nComentarios: ' + c.note : ''}`;
+  return `Hola, quiero hacer este pedido (${code}):\n${l}\n${order.shipping ? 'Envío: ' + money(order.shipping) + '\n' : ''}${order.discount ? 'Descuento (' + order.coupon + '): -' + money(order.discount) + '\n' : ''}Total: ${money(order.total)}\n\nNombre: ${c.name}\nTeléfono: ${c.phone}\n${c.payment ? 'Pago: ' + c.payment + '\n' : ''}${c.delivery === 'envio' ? 'Envío a: ' + c.address + (c.zone ? ' (' + c.zone + ')' : '') : 'Retiro en el local' + (c.pickup ? ': ' + c.pickup : '')}${c.note ? '\nComentarios: ' + c.note : ''}`;
 }
 /* Aviso por correo con EmailJS (gratis, sin servidor). Se configura en Ajustes > Aviso por email. */
 async function notifyEmail(order, code, test) {
@@ -1552,6 +1611,9 @@ async function submitOrder(form) {
   if (!lines.length) return fail('Tu carrito está vacío.');
   if (lines.reduce((a, l) => a + l.qty, 0) > maxUnits()) return fail(`Cada pedido admite hasta ${maxUnits()} unidades. Quitá algunas o escribinos por WhatsApp.`);
 
+  // Retiro: día y hora (si el negocio lo pide)
+  if (c.delivery === 'retiro' && S().askPickup) c.pickup = [c.pickupDay, c.pickupTime].filter(Boolean).join(' · ').slice(0, 60);
+  delete c.pickupDay; delete c.pickupTime; if (!c.pickup) delete c.pickup;
   // Envío: localidad y costo
   if (c.delivery === 'envio') { if (c.zone === OTRA || !zones().some(z => z.name === c.zone)) c.zone = c.zone === OTRA || !zones().length ? 'Otra localidad (a coordinar)' : zones()[0].name; } else delete c.zone;
   const pr = pricing({ delivery: c.delivery, zone: c.zone }), sh = pr.sh;
@@ -1568,7 +1630,7 @@ async function submitOrder(form) {
   const sig = JSON.stringify([order.items.map(i => i.id + ':' + i.qty).sort(), digits(c.phone)]);
   const last = lsGet('nodo_last');
   const finish = (code, dup) => { state.sending = false; state.cart = {}; state.coupon = ''; saveCart(); state.form = null;
-    lsSet('nodo_cust', remember ? { name: c.name, phone: c.phone, address: c.address || '', zone: c.zone || '', delivery: c.delivery } : null); state.doneCode = code; state.dupNote = !!dup; state.cartStep = 'done'; renderCartBadge(); renderCart(); };
+    lsSet('nodo_cust', remember ? { name: c.name, phone: c.phone, address: c.address || '', zone: c.zone || '', delivery: c.delivery } : null); state.doneCode = code; state.donePay = c.payment || ''; state.dupNote = !!dup; state.cartStep = 'done'; renderCartBadge(); renderCart(); };
   if (last && last.sig === sig && Date.now() - last.at < 180000) return finish(last.code, true);
   // Campo trampa que las personas no ven: si viene completo es un robot
   if (hp) { state.sending = true; renderCart(); await sleep(800); return finish('P-' + Math.random().toString(36).toUpperCase().slice(2, 9)); }
@@ -1604,6 +1666,7 @@ document.addEventListener('click', e => {
     else if (a === 'heroNext') setHero(state.hero + 1);
     else if (a === 'gal') { const p = activeProducts().find(x => x.id === id); if (p) { $('#pdMain').src = productImages(p)[+t.dataset.i]; $$('.thumbs button').forEach(b => b.setAttribute('aria-current', b === t)); } }
     else if (a === 'share') shareProduct(id);
+    else if (a === 'fav') { toggleFav(id); }
     else if (a === 'sugg') { hideSugg(); $('#q').value = ''; state.q = ''; render(); openProduct(id); }
     else if (a === 'sub') { state.sub = t.dataset.v; render(); }
     else if (a === 'clear') { state.sub = ''; state.onlyOffers = false; state.inStock = false; state.q = ''; $('#q').value = ''; render(); }
@@ -1690,6 +1753,8 @@ function loadOrders() {
     if (!first && l.length > state.orders.length) toast('Llegó un pedido nuevo', { label: 'Ver', fn: () => { state.admin.tab = 'orders'; location.hash = '#/admin'; render(); } });
     first = false; state.orders = l; softRender();
   });
+  state.adminsUnsub && state.adminsUnsub();
+  state.adminsUnsub = DB.subscribe('admins', l => { state.admins = l; if (state.admin.tab === 'admins') softRender(); }, () => { /* sin permiso: no es admin */ });
 }
 /* Re-render que no interrumpe a quien está escribiendo en el panel */
 let pendingRender = false;
@@ -1717,6 +1782,11 @@ function reportErr(msg) {
 }
 window.addEventListener('error', e => reportErr(e.message));
 window.addEventListener('unhandledrejection', e => reportErr(e.reason && e.reason.message || e.reason));
+if (window.NEGOCIO && window.NEGOCIO.demo) { // cinta de demostración (solo en la copia de demo)
+  const bar = document.createElement('div'); bar.className = 'demo-bar';
+  bar.innerHTML = 'Tienda de <b>demostración</b>: los datos viven solo en tu navegador. Probá el panel en <a href="#/admin">#/admin</a> con usuario <b>user</b> y contraseña <b>123456</b>.';
+  document.body.prepend(bar);
+}
 (async function init() {
   state.route = parseHash();
   render();
@@ -1729,7 +1799,7 @@ window.addEventListener('unhandledrejection', e => reportErr(e.reason && e.reaso
   loadPublic();
   DB.auth.onChange(u => {
     state.user = u; state.authReady = true;
-    if (u) loadOrders(); else { state.ordersUnsub && state.ordersUnsub(); state.ordersUnsub = null; state.orders = []; }
+    if (u) loadOrders(); else { state.ordersUnsub && state.ordersUnsub(); state.ordersUnsub = null; state.orders = []; state.adminsUnsub && state.adminsUnsub(); state.adminsUnsub = null; state.admins = []; }
     if (state.route.name === 'admin') render();
   });
 })();
@@ -1747,7 +1817,7 @@ function adminView() {
   const rules = state.fsError ? '<div class="wrap"><p class="err" role="alert" style="margin:12px 0">No se pueden leer los productos de Firestore. Casi seguro faltan publicar las reglas (Firebase > Firestore > Reglas). Mientras tanto la tienda muestra productos de ejemplo.</p></div>' : '';
   return `<div id="adminShell"><div class="adm-bar"><div class="wrap"><span class="logo"><span class="logo-mark"></span>${esc(state.settings.storeName)} · Administración</span>
     <nav><a class="btn" href="#/">Ver tienda</a><button type="button" class="btn" data-act="admLogout">Salir</button></nav></div></div>${rules}
-    <div class="wrap"><div class="tabs" role="tablist">${tab('products', 'Productos')}${tab('categories', 'Categorías')}${tab('banners', 'Ofertas y banners')}${tab('orders', 'Pedidos', nuevos || '')}${tab('settings', 'Ajustes')}</div>
+    <div class="wrap"><div class="tabs" role="tablist">${tab('summary', 'Resumen')}${tab('products', 'Productos')}${tab('categories', 'Categorías')}${tab('banners', 'Ofertas y banners')}${tab('orders', 'Pedidos', nuevos || '')}${tab('admins', 'Usuarios')}${tab('settings', 'Ajustes')}</div>
     <div id="adminBody" role="tabpanel"></div></div></div>`;
 }
 function loginView() {
@@ -1790,7 +1860,7 @@ function renderAdminBody() {
   applyPendingStock(); ensureCats();
   const b = $('#adminBody'); if (!b) return;
   const t = state.admin.tab;
-  b.innerHTML = t === 'products' ? productsTab() : t === 'categories' ? categoriesTab() : t === 'banners' ? bannersTab() : t === 'orders' ? ordersTab() : settingsTab();
+  b.innerHTML = t === 'admins' ? adminsTab() : t === 'summary' ? summaryTab() : t === 'products' ? productsTab() : t === 'categories' ? categoriesTab() : t === 'banners' ? bannersTab() : t === 'orders' ? ordersTab() : settingsTab();
   const nuevos = state.orders.filter(o => o.status === 'nuevo').length;
   const tabBtn = $('[data-tab=orders]'); if (tabBtn) tabBtn.innerHTML = 'Pedidos' + (nuevos ? `<span class="badge">${nuevos}</span>` : '');
   $$('.tabs [data-tab]').forEach(x => x.setAttribute('aria-selected', x.dataset.tab === t));
@@ -1816,7 +1886,7 @@ function productRows() {
 function productsTab() {
   return `<div class="a-tools"><input class="in" type="search" placeholder="Buscar producto" aria-label="Buscar producto" data-act="admSearch" value="${esc(state.admin.q)}">
     <select class="in" aria-label="Filtrar por sección" data-act="admCatFilter"><option value="">Todas las secciones</option>${Object.entries(CATS).map(([k, c]) => `<option value="${k}" ${state.admin.cat === k ? 'selected' : ''}>${c.name}</option>`).join('')}</select>
-    <span class="sp"></span><button type="button" class="btn btn-primary" data-act="admNew">Nuevo producto</button></div>
+    <span class="sp"></span><button type="button" class="btn btn-line" data-act="admImport">Importar / exportar</button><button type="button" class="btn btn-primary" data-act="admNew">Nuevo producto</button></div>
     <p class="note" style="margin:-4px 0 12px">Editá precio, precio anterior (para mostrar la oferta) y stock directamente en la lista. Los cambios se publican al instante.</p>
     <div id="aList">${productRows()}</div>`;
 }
@@ -1869,7 +1939,22 @@ function updatePreview(form) {
   $('#imgPv').src = img || artUri(art, accent);
   $('#imgNote').textContent = img ? (img.startsWith('data:') ? 'Foto subida.' : '') : 'Sin imagen: se muestra la ilustración elegida abajo.';
 }
+/* Si hay Cloudinary configurado, la foto se sube allá y se guarda solo el enlace; si no (o si falla), se guarda dentro de la base como antes */
 async function fileToDataUrl(file, maxSide, maxLen = 600000) {
+  const s = state.settings;
+  if (s.cloudName && s.cloudPreset) {
+    try {
+      const url = await fileToDataUrlLocal(file, Math.max(maxSide, 1200), 2500000);
+      const fd = new FormData(); fd.append('file', url); fd.append('upload_preset', s.cloudPreset);
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(s.cloudName)}/image/upload`, { method: 'POST', body: fd });
+      const j = await res.json().catch(() => ({}));
+      if (res.ok && j.secure_url) return j.secure_url;
+      console.warn('Cloudinary', res.status, j); toast('No se pudo subir al servicio de fotos (' + ((j.error && j.error.message) || res.status) + '). Se guarda dentro de la tienda.', { bad: true });
+    } catch (e) { console.warn('Cloudinary', e); }
+  }
+  return fileToDataUrlLocal(file, maxSide, maxLen);
+}
+async function fileToDataUrlLocal(file, maxSide, maxLen = 600000) {
   const bmp = await createImageBitmap(file);
   let side = maxSide, q = .86;
   for (let i = 0; i < 6; i++) {
@@ -1988,7 +2073,7 @@ function openOrder(id) {
   openForm('Pedido ' + (o.code || ''), `<p class="muted">${fmtDate(o.createdAt)} · ${waChip(o)}</p>
     <table class="ord-items"><tbody>${(o.items || []).map(i => `<tr><td>${esc(i.qty)} × ${esc(i.name)}</td><td>${money(i.price * i.qty)}</td></tr>`).join('')}${o.discount ? `<tr><td>Descuento${o.coupon ? ' (' + esc(o.coupon) + ')' : ''}</td><td>− ${money(o.discount)}</td></tr>` : ''}${o.shipping ? `<tr><td>Envío${c.zone ? ' (' + esc(c.zone) + ')' : ''}</td><td>${money(o.shipping)}</td></tr>` : ''}<tr><td><b>Total</b></td><td style="font-size:18px">${money(o.total)}</td></tr></tbody></table>
     ${o.priceMismatch ? `<p class="err">Atención: los precios del pedido no coinciden con los actuales. Total verificado: ${money(o.verifiedTotal)}.</p>` : ''}
-    <p><b>${esc(c.name)}</b><br>${esc(c.phone)}<br>${c.payment ? 'Pago: ' + esc(c.payment) + '<br>' : ''}${c.delivery === 'envio' ? 'Envío a: ' + esc(c.address) + (c.zone ? ' (' + esc(c.zone) + ')' : '') : 'Retiro en el local'}</p>
+    <p><b>${esc(c.name)}</b><br>${esc(c.phone)}<br>${c.payment ? 'Pago: ' + esc(c.payment) + '<br>' : ''}${c.delivery === 'envio' ? 'Envío a: ' + esc(c.address) + (c.zone ? ' (' + esc(c.zone) + ')' : '') : 'Retiro en el local' + (c.pickup ? ': ' + esc(c.pickup) : '')}</p>
     ${c.note ? `<p class="muted" style="margin-top:8px">“${esc(c.note)}”</p>` : ''}
     <div class="dlg-f"><button type="button" class="btn btn-line" data-act="closeDlg">Cerrar</button><a class="btn btn-primary" target="_blank" rel="noopener" href="https://wa.me/${uyPhone(c.phone)}?text=${encodeURIComponent(msg)}">Escribir al cliente</a></div>`);
 }
@@ -2019,12 +2104,18 @@ function settingsTab() {
     <div class="field"><label for="s-f">Texto extra en el pie de página (opcional)</label><textarea class="in" id="s-f" name="footerInfo" rows="2">${esc(s.footerInfo)}</textarea></div>
     <h3 style="margin-top:22px">Envíos y límites</h3>
     <div class="field"><label for="s-z">Localidades y costo de envío (una por línea: Localidad | costo)</label><textarea class="in" id="s-z" name="zones" rows="8">${esc((s.shippingZones || []).map(z => z.name + ' | ' + (Number(z.cost) || 0)).join('\n'))}</textarea><small>Costo 0 = sin costo. Los costos por distancia son estimados: ajustalos a tu realidad. Las localidades que no figuren se coordinan por WhatsApp.</small></div>
+    <label class="chk" style="margin:6px 0 14px"><input type="checkbox" name="askPickup" ${s.askPickup ? 'checked' : ''}> Pedir día y hora de retiro cuando el cliente retira en el local</label>
+    <div class="field"><label for="s-ti">Datos para transferencias (se muestran al cliente que elige “Transferencia”)</label><textarea class="in" id="s-ti" name="transferInfo" rows="3" placeholder="Banco, cuenta, titular, alias…">${esc(s.transferInfo)}</textarea></div>
     <div class="field"><label for="s-fs">Envío gratis desde (monto, 0 = no usar)</label><input class="in" id="s-fs" name="freeShippingFrom" type="number" min="0" step="1" value="${esc(s.freeShippingFrom || 0)}"><small>Si el pedido (con descuentos) llega a ese monto, el envío es gratis en las localidades con costo.</small></div>
     <div class="field"><label for="s-cp">Cupones de descuento (uno por línea: CÓDIGO | 10% o CÓDIGO | 200)</label><textarea class="in" id="s-cp" name="coupons" rows="3" placeholder="BIENVENIDO | 10%">${esc((s.coupons || []).map(c => c.code + ' | ' + (c.type === 'pct' ? c.value + '%' : c.value)).join('\n'))}</textarea><small>"10%" descuenta un porcentaje; un número solo descuenta ese monto fijo. Los códigos no se pueden ocultar del todo (quedan en los datos públicos de la tienda): usalos para promociones, no para secretos.</small></div>
     <div class="form-grid"><div class="field"><label for="s-mu">Máximo de unidades por pedido</label><input class="in" id="s-mu" name="maxUnits" type="number" min="1" step="1" value="${esc(s.maxUnits ?? 30)}"></div>
     <div class="field"><label for="s-mp">Máximo de unidades del mismo producto</label><input class="in" id="s-mp" name="maxPerProduct" type="number" min="1" step="1" value="${esc(s.maxPerProduct ?? 10)}"></div></div>
     <h3 style="margin-top:22px">Modo catálogo</h3>
     <label class="chk" style="margin-bottom:14px"><input type="checkbox" name="catalogAll" ${s.catalogAll ? 'checked' : ''}> Toda la tienda en modo catálogo (sin carrito: todo se consulta por WhatsApp)</label>
+    <h3 style="margin-top:22px">Almacén de fotos (opcional)</h3>
+    <p class="note" style="margin-bottom:10px">Si cargás muchas fotos, conviene un servicio externo gratuito: en <b>cloudinary.com</b> creá una cuenta, andá a Settings &gt; Upload y creá un <i>upload preset</i> en modo <b>Unsigned</b>. Pegá acá tu <i>Cloud name</i> y el nombre del preset. Las fotos nuevas se suben allá y en la tienda se guarda solo el enlace.</p>
+    <div class="form-grid"><div class="field"><label for="s-cn">Cloud name</label><input class="in" id="s-cn" name="cloudName" value="${esc(s.cloudName)}"></div>
+    <div class="field"><label for="s-cu">Upload preset (unsigned)</label><input class="in" id="s-cu" name="cloudPreset" value="${esc(s.cloudPreset)}"></div></div>
     <h3 style="margin-top:22px">Aviso de pedidos por email</h3>
     <p class="note" style="margin-bottom:10px">Gratis con <b>emailjs.com</b>: creá una cuenta, conectá tu correo (Email Services), creá una plantilla (Email Templates) con asunto <code>{{subject}}</code> y cuerpo <code>{{message}}</code>, y destinatario tu correo. Copiá acá los tres datos. Con eso cada pedido te llega por email.</p>
     <div class="field"><label for="s-es">Service ID</label><input class="in" id="s-es" name="emailServiceId" value="${esc(s.emailServiceId)}" placeholder="service_xxxxxxx"></div>
@@ -2065,6 +2156,14 @@ function adminClick(a, t) {
   const id = t.dataset.id;
   if (a === 'admTab') { state.admin.tab = t.dataset.tab; renderAdminBody(); }
   else if (a === 'admNew') openProductForm();
+  else if (a === 'admImport') openImportDialog();
+  else if (a === 'admDelAdmin') { if (!confirm('¿Quitarle el acceso al panel a ' + t.dataset.name + '? Su cuenta deja de poder editar la tienda.')) return; guarded(async () => { await DB.remove('admins', id); toast('Acceso quitado'); }); }
+  else if (a === 'admTpl') downloadFile('plantilla-productos.csv', productsCsv([
+    { name: 'Remera básica', category: 'Ropa', sub: 'Remeras', brand: 'Marca', price: 890, oldPrice: 1190, stock: 12, description: 'Algodón peinado', specs: 'Corte regular\nLavable a máquina', variants: [{ name: 'Talle', options: ['S', 'M', 'L'] }, { name: 'Color', options: ['Negro', 'Blanco'] }], images: ['https://ejemplo.com/foto1.jpg'], active: true },
+    { name: 'Producto sin variantes', category: 'Ropa', price: 1500, stock: 5, active: true }]));
+  else if (a === 'admExportP') downloadFile('productos-' + new Date().toISOString().slice(0, 10) + '.csv', productsCsv(state.products));
+  else if (a === 'admExportO') downloadFile('pedidos-' + new Date().toISOString().slice(0, 10) + '.csv', ordersCsv(state.orders));
+  else if (a === 'admImpGo') runImport();
   else if (a === 'admEdit') openProductForm(id);
   else if (a === 'admDel') { const p = state.products.find(x => x.id === id); askConfirm(`¿Eliminar “${p?.name}”? No se puede deshacer.`).then(ok => ok && guarded(async () => { await DB.remove('products', id); toast('Producto eliminado'); })); }
   else if (a === 'admCNew') openCategoryForm();
@@ -2109,6 +2208,7 @@ function adminClick(a, t) {
 
 function adminChange(a, t) {
   const id = t.dataset.id;
+  if (a === 'admImpFile') { const f = t.files[0]; t.value = ''; if (f) f.text().then(importPreview).catch(() => toast('No se pudo leer el archivo.', { bad: true })); return; }
   if (a === 'admCatFilter') { state.admin.cat = t.value; $('#aList').innerHTML = productRows(); }
   else if (a === 'admInline') {
     const field = t.dataset.field, raw = t.value.trim();
@@ -2121,6 +2221,7 @@ function adminChange(a, t) {
   else if (a === 'admStatus') guarded(async () => {
     const o = state.orders.find(x => x.id === id);
     await DB.save('orders', id, { status: t.value });
+    await adjustStockForStatus(o, t.value); // cancelar devuelve el stock; reactivar lo vuelve a descontar
     if (o && o.code) await DB.save('orderStatus', o.code, { status: t.value, updatedAt: Date.now() }); // lo que ve el cliente al seguir su pedido
     toast('Estado actualizado');
   });
@@ -2165,6 +2266,12 @@ async function adminSubmit(form) {
     if (!id) data.createdAt = Date.now();
     return guarded(async () => { await DB.save('products', id, data); $('#dlgForm').close(); toast('Producto guardado'); }, form);
   }
+  if (kind === 'newadmin') {
+    const u = s('username'), p = String(f.get('password') || '');
+    if (!u) return formErr(form, 'Escribí un usuario o correo.');
+    if (p.length < 6) return formErr(form, 'La contraseña necesita al menos 6 caracteres.');
+    return guarded(async () => { const r = await DB.createAdmin(u, p); form.reset(); toast(r.existed ? 'Ese usuario ya existía: ahora es administrador' : 'Administrador creado'); }, form);
+  }
   if (kind === 'catmove') {
     const target = s('target'); if (!CATS[target]) return formErr(form, 'Elegí una categoría de destino.');
     return guarded(async () => {
@@ -2196,7 +2303,7 @@ async function adminSubmit(form) {
       branches: String(f.get('branches') || '').split('\n').map(l => { const [n, a, im, lk] = l.split('|').map(x => (x || '').trim()); return { name: n, address: a, image: im, link: lk }; }).filter(b => b.name).slice(0, 6),
       contactWhatsapp: digits(s('contactWhatsapp')), contactEmail: s('contactEmail'), address: s('address'), hours: String(f.get('hours') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 7),
       shippingZones: String(f.get('zones') || '').split('\n').map(l => { const [n, c] = l.split('|'); return { name: (n || '').trim(), cost: Math.max(0, Math.round(num(c) || 0)) }; }).filter(z => z.name).slice(0, 60),
-      catalogAll: f.get('catalogAll') === 'on', emailServiceId: s('emailServiceId'), emailTemplateId: s('emailTemplateId'), emailPublicKey: s('emailPublicKey'),
+      cloudName: s('cloudName'), cloudPreset: s('cloudPreset'), catalogAll: f.get('catalogAll') === 'on', askPickup: f.get('askPickup') === 'on', transferInfo: String(f.get('transferInfo') || '').trim(), emailServiceId: s('emailServiceId'), emailTemplateId: s('emailTemplateId'), emailPublicKey: s('emailPublicKey'),
       freeShippingFrom: Math.max(0, Math.round(num(f.get('freeShippingFrom')) || 0)),
       coupons: String(f.get('coupons') || '').split('\n').map(l => { const [c, v] = l.split('|').map(x => (x || '').trim()); const pct = /%$/.test(v || ''); const n = num((v || '').replace('%', '')); return { code: (c || '').toUpperCase().replace(/\s+/g, ''), type: pct ? 'pct' : 'fix', value: pct ? Math.min(100, n) : n }; }).filter(c => c.code && c.value > 0).slice(0, 20),
       maxUnits: Math.max(1, Math.floor(num(f.get('maxUnits')) || 30)), maxPerProduct: Math.max(1, Math.floor(num(f.get('maxPerProduct')) || 10)),
@@ -2209,6 +2316,164 @@ async function adminSubmit(form) {
     if (p1 !== p2) return formErr(form, 'Las contraseñas no coinciden.');
     return guarded(async () => { await DB.auth.changePassword(p1); form.reset(); toast('Contraseña actualizada'); }, form);
   }
+}
+
+
+/* ───────── Carga masiva, exportar y respaldo (CSV: se abre y se edita con Excel / Google Sheets) ───────── */
+const CSV_COLS = ['nombre', 'categoria', 'subcategoria', 'marca', 'precio', 'precio_anterior', 'stock', 'descripcion', 'caracteristicas', 'variantes', 'fotos', 'visible', 'solo_catalogo', 'ocultar_precio'];
+function csvParse(text) {
+  text = String(text).replace(/^\uFEFF/, '');
+  const first = text.split(/\r?\n/)[0] || '', d = (first.match(/;/g) || []).length >= (first.match(/,/g) || []).length ? ';' : ',';
+  const rows = []; let row = [], cur = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) { if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+    else if (ch === '"' && cur === '') q = true; // las comillas solo abren un campo si están al principio
+    else if (ch === d) { row.push(cur); cur = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cur); cur = ''; if (row.some(x => x.trim() !== '')) rows.push(row); row = []; }
+    else cur += ch;
+  }
+  row.push(cur); if (row.some(x => x.trim() !== '')) rows.push(row);
+  return rows;
+}
+const csvCell = v => { const t = String(v ?? ''); return /[;"\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+function productsCsv(list) {
+  const rows = list.map(p => [p.name, CATS[p.category]?.name || p.category || '', p.sub || '', p.brand || '', p.price ?? '', p.oldPrice || '', p.stock ?? '', p.description || '', String(p.specs || '').split('\n').map(x => x.trim()).filter(Boolean).join(' | '),
+    prodVariants(p).map(g => g.name + ': ' + g.options.join(', ')).join(' | '), (p.images && p.images.length ? p.images : p.image ? [p.image] : []).filter(u => !String(u).startsWith('data:')).join(' | '), p.active === false ? 'no' : 'si', p.catalogOnly ? 'si' : '', p.hidePrice ? 'si' : '']);
+  return [CSV_COLS, ...rows].map(r => r.map(csvCell).join(';')).join('\r\n');
+}
+function ordersCsv(list) {
+  const head = ['codigo', 'fecha', 'estado', 'cliente', 'telefono', 'entrega', 'localidad', 'direccion', 'pago', 'productos', 'descuento', 'envio', 'total', 'comentarios'];
+  const rows = list.map(o => { const c = o.customer || {}; return [o.code || o.id, fmtDate(o.createdAt), o.status, c.name, c.phone, c.delivery, c.zone || '', c.address || '', c.payment || '', (o.items || []).map(i => i.qty + ' x ' + i.name).join(' | '), o.discount || 0, o.shipping || 0, o.total, c.note || '']; });
+  return [head, ...rows].map(r => r.map(csvCell).join(';')).join('\r\n');
+}
+function downloadFile(name, text) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['\uFEFF' + text], { type: 'text/csv;charset=utf-8' }));
+  a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function openImportDialog() {
+  openForm('Importar / exportar productos', `<div class="imp">
+    <p><b>Cargar muchos productos de una vez.</b> Descargá la plantilla, completala en Excel o Google Sheets (una fila por producto) y guardala como <b>CSV</b>. Después subila acá. Las secciones que no existan se crean solas, y si el nombre coincide con un producto ya cargado, se actualiza.</p>
+    <div class="dlg-f" style="justify-content:flex-start;flex-wrap:wrap"><button type="button" class="btn btn-line" data-act="admTpl">Descargar plantilla</button>
+    <label class="btn btn-primary">Subir planilla CSV<input type="file" accept=".csv,text/csv,text/plain" class="sr" data-act="admImpFile"></label></div>
+    <hr style="margin:18px 0;border:0;border-top:1px solid var(--line)"><p><b>Respaldo.</b> Descargá tus datos cuando quieras.</p>
+    <div class="dlg-f" style="justify-content:flex-start;flex-wrap:wrap"><button type="button" class="btn btn-line" data-act="admExportP">Exportar productos</button><button type="button" class="btn btn-line" data-act="admExportO">Exportar pedidos</button></div>
+    <small class="muted">Columnas: ${CSV_COLS.join(', ')}. En <i>variantes</i> usá <code>Talle: S, M, L | Color: Negro, Blanco</code>; en <i>fotos</i> y <i>caracteristicas</i>, separá con <code> | </code>. Las fotos subidas desde el panel no se exportan (solo los enlaces).</small></div>`);
+}
+const normH = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+const ALIAS = { nombre: 'nombre', producto: 'nombre', name: 'nombre', categoria: 'categoria', seccion: 'categoria', subcategoria: 'subcategoria', marca: 'marca', precio: 'precio', precio_anterior: 'precio_anterior', precio_antes: 'precio_anterior', stock: 'stock', descripcion: 'descripcion', caracteristicas: 'caracteristicas', variantes: 'variantes', fotos: 'fotos', imagenes: 'fotos', visible: 'visible', solo_catalogo: 'solo_catalogo', ocultar_precio: 'ocultar_precio' };
+function parseMoney(v) {
+  let t = String(v ?? '').replace(/[^0-9.,-]/g, ''); if (t === '') return NaN;
+  if (t.includes(',') && t.includes('.')) t = t.replace(/\./g, '').replace(',', '.');
+  else if (t.includes(',')) t = t.replace(',', '.');
+  else if (/^\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, '');
+  const n = Number(t); return Number.isFinite(n) ? n : NaN;
+}
+const yes = v => /^(si|sí|s|1|true|x|yes)$/i.test(String(v || '').trim());
+var importPlan = null;
+function importPreview(text) {
+  const rows = csvParse(text);
+  if (rows.length < 2) return toast('La planilla está vacía o no tiene encabezados.', { bad: true });
+  const heads = rows[0].map(h => ALIAS[normH(h)] || ''), col = k => heads.indexOf(k);
+  if (col('nombre') < 0 || col('precio') < 0) return toast('Faltan las columnas "nombre" y "precio". Usá la plantilla.', { bad: true });
+  const get = (r, k) => (col(k) < 0 ? '' : String(r[col(k)] ?? '').trim());
+  const items = [], issues = [], newCats = new Map(), seen = new Set();
+  const catKey = name => Object.entries(CATS).find(([k, c]) => normH(c.name) === normH(name) || k === normH(name).replace(/_/g, '-'))?.[0];
+  rows.slice(1, 501).forEach((r, i) => {
+    const line = i + 2, name = get(r, 'nombre'), price = parseMoney(get(r, 'precio'));
+    if (!name) return issues.push(`Fila ${line}: falta el nombre.`);
+    if (!(price >= 0)) return issues.push(`Fila ${line} (${name}): precio no válido.`);
+    if (seen.has(normH(name))) return issues.push(`Fila ${line} (${name}): nombre repetido en la planilla, se omite.`);
+    seen.add(normH(name));
+    const cname = get(r, 'categoria'); let ck = cname ? catKey(cname) : Object.keys(CATS)[0];
+    if (cname && !ck) { ck = 'new:' + normH(cname); newCats.set(ck, cname); }
+    if (!ck) { issues.push(`Fila ${line} (${name}): falta la categoría y no hay ninguna creada.`); return; }
+    const old = parseMoney(get(r, 'precio_anterior')), stockRaw = get(r, 'stock'), stock = stockRaw === '' ? null : Math.max(0, Math.floor(parseMoney(stockRaw)));
+    const exist = state.products.find(p => normH(p.name) === normH(name));
+    items.push({ exist, data: {
+      name, category: ck, sub: get(r, 'subcategoria'), brand: get(r, 'marca'), price, oldPrice: old > price ? old : null, stock: Number.isNaN(stock) ? null : stock,
+      description: get(r, 'descripcion'), specs: get(r, 'caracteristicas').split('|').map(x => x.trim()).filter(Boolean).join('\n'),
+      variants: get(r, 'variantes').split('|').map(g => { const [n, o] = g.split(':'); return { name: (n || '').trim(), options: [...new Set(String(o || '').split(',').map(x => x.trim()).filter(Boolean))].slice(0, 20) }; }).filter(g => g.name && g.options.length).slice(0, 3),
+      images: get(r, 'fotos').split('|').map(x => x.trim()).filter(u => /^https?:\/\//i.test(u)).slice(0, MAX_IMGS),
+      active: col('visible') < 0 ? true : get(r, 'visible') === '' ? true : yes(get(r, 'visible')), catalogOnly: yes(get(r, 'solo_catalogo')), hidePrice: yes(get(r, 'solo_catalogo')) && yes(get(r, 'ocultar_precio'))
+    } });
+  });
+  importPlan = { items, newCats };
+  const nNew = items.filter(x => !x.exist).length, nUpd = items.length - nNew;
+  openForm('Revisá antes de importar', `<div class="imp"><p><b>${items.length}</b> producto${items.length === 1 ? '' : 's'} listo${items.length === 1 ? '' : 's'}: <b>${nNew}</b> nuevo${nNew === 1 ? '' : 's'} y <b>${nUpd}</b> para actualizar.${newCats.size ? ` Se crearán ${newCats.size} sección${newCats.size === 1 ? '' : 'es'} nueva${newCats.size === 1 ? '' : 's'}: ${[...newCats.values()].map(esc).join(', ')}.` : ''}</p>
+    ${issues.length ? `<p class="err" role="alert"><b>${issues.length} fila${issues.length === 1 ? '' : 's'} con problemas (no se importan):</b><br>${issues.slice(0, 12).map(esc).join('<br>')}${issues.length > 12 ? '<br>…' : ''}</p>` : ''}
+    <p class="err" data-err hidden role="alert" id="impErr"></p>
+    <div class="dlg-f"><button type="button" class="btn btn-line" data-act="closeDlg">Cancelar</button><button type="button" class="btn btn-primary" data-act="admImpGo" ${items.length ? '' : 'disabled'} id="impGo">Importar ${items.length}</button></div></div>`);
+}
+async function runImport() {
+  if (!importPlan) return;
+  const { items, newCats } = importPlan, btn = $('#impGo'); btn.disabled = true;
+  const err = m => { const e = $('#impErr'); e.textContent = m; e.hidden = false; btn.disabled = false; };
+  try {
+    const catMap = {}; let order = Object.keys(CATS).length;
+    for (const [k, name] of newCats) {
+      let cid = slugify(name), base = cid, n = 2; while (CATS[cid] || Object.values(catMap).includes(cid)) cid = base + '-' + n++;
+      const acc = '#2347F5'; await DB.save('categories', cid, { name, blurb: '', image: '', art: 'box', acc, tint: mixWhite(acc, .88), order: ++order });
+      catMap[k] = cid;
+    }
+    let done = 0;
+    for (const { exist, data } of items) {
+      const d = { ...data, category: catMap[data.category] || data.category, image: data.images[0] || '', art: exist?.art || '', updatedAt: Date.now() };
+      if (exist) { if (!d.images.length) { d.images = exist.images || []; d.image = exist.image || ''; } await DB.save('products', exist.id, d); }
+      else { d.createdAt = Date.now(); await DB.save('products', null, d); }
+      btn.textContent = `Importando… ${++done}/${items.length}`;
+    }
+    importPlan = null; $('#dlgForm').close(); toast(`${items.length} producto${items.length === 1 ? '' : 's'} importado${items.length === 1 ? '' : 's'}`);
+  } catch (e) { console.error(e); err(/permission|insufficient/i.test(e.message || '') ? 'Tu sesión no tiene permiso para guardar. Volvé a ingresar.' : (e.message || 'No se pudo importar.')); }
+}
+
+
+/* Cancelar un pedido devuelve el stock (una sola vez); si se reactiva, se vuelve a descontar */
+async function adjustStockForStatus(o, next) {
+  if (!o || !o.stockApplied) return;
+  const prev = o.status, tot = {};
+  for (const it of o.items || []) tot[it.id] = (tot[it.id] || 0) + Number(it.qty || 0);
+  const move = async sign => {
+    for (const [pid, q] of Object.entries(tot)) {
+      const p = state.products.find(x => x.id === pid);
+      if (p && p.stock !== null && p.stock !== undefined) await DB.save('products', pid, { stock: Math.max(0, Number(p.stock) + sign * q), updatedAt: Date.now() });
+    }
+  };
+  if (next === 'cancelado' && prev !== 'cancelado' && !o.stockRestored) { await move(+1); await DB.save('orders', o.id, { stockRestored: true }); toast('Pedido cancelado: el stock se devolvió'); }
+  else if (prev === 'cancelado' && next !== 'cancelado' && o.stockRestored) { await move(-1); await DB.save('orders', o.id, { stockRestored: false }); }
+}
+
+/* ── Resumen ── */
+function summaryTab() {
+  const now = Date.now(), day = 864e5, startToday = new Date().setHours(0, 0, 0, 0);
+  const valid = state.orders.filter(o => o.status !== 'cancelado');
+  const per = from => { const l = valid.filter(o => (o.createdAt || 0) >= from); return { n: l.length, sum: l.reduce((a, o) => a + (Number(o.total) || 0), 0) }; };
+  const periods = [['Hoy', per(startToday)], ['Últimos 7 días', per(now - 7 * day)], ['Últimos 30 días', per(now - 30 * day)]];
+  const top = {}; valid.filter(o => (o.createdAt || 0) >= now - 30 * day).forEach(o => (o.items || []).forEach(i => { const k = i.id; (top[k] = top[k] || { name: String(i.name).replace(/ \(.*\)$/, ''), q: 0 }).q += Number(i.qty || 0); }));
+  const topL = Object.values(top).sort((a, b) => b.q - a.q).slice(0, 5);
+  const low = state.products.filter(p => p.active !== false && Number.isFinite(Number(p.stock)) && p.stock !== null && Number(p.stock) <= 5).sort((a, b) => a.stock - b.stock).slice(0, 12);
+  const nuevos = state.orders.filter(o => o.status === 'nuevo').length;
+  return `<div class="stats">${periods.map(([l, v]) => `<div class="stat"><small>${l}</small><b>${money(v.sum)}</b><span>${v.n} pedido${v.n === 1 ? '' : 's'}</span></div>`).join('')}
+    <div class="stat ${nuevos ? 'hot' : ''}"><small>Pedidos nuevos</small><b>${nuevos}</b><span><button type="button" class="lnk" data-act="admTab" data-tab="orders">Ver pedidos</button></span></div></div>
+    <div class="stat-cols"><div class="panel"><h3>Más pedidos (30 días)</h3>${topL.length ? `<ol class="plain">${topL.map(x => `<li>${esc(x.name)} <b>× ${x.q}</b></li>`).join('')}</ol>` : '<p class="muted">Todavía no hay pedidos.</p>'}</div>
+    <div class="panel"><h3>Stock bajo o agotado</h3>${low.length ? `<ul class="plain">${low.map(p => `<li><button type="button" class="lnk" data-act="admEdit" data-id="${esc(p.id)}">${esc(p.name)}</button> <b class="${Number(p.stock) <= 0 ? 'bad' : 'lowst'}">${Number(p.stock) <= 0 ? 'agotado' : 'quedan ' + p.stock}</b></li>`).join('')}</ul>` : '<p class="muted">Todo con stock suficiente.</p>'}</div></div>
+    <p class="note">Los totales no incluyen pedidos cancelados. Son los pedidos recibidos en la tienda, no pagos confirmados.</p>`;
+}
+
+
+/* ── Usuarios (administradores) ── */
+function adminsTab() {
+  const me = (state.user && state.user.email || '').toLowerCase(), disp = e => String(e).replace('@tienda-admin.local', '');
+  const list = [...state.admins].sort((a, b) => String(a.email).localeCompare(b.email));
+  return `<div class="panel"><h3>Quién puede entrar al panel</h3>
+    <ul class="plain">${me ? `<li><span>${esc(disp(me))} <small class="muted">(vos)</small></span></li>` : ''}${list.filter(a => String(a.email).toLowerCase() !== me).map(a => `<li><span>${esc(disp(a.email))}</span><button type="button" class="btn btn-danger btn-sm" data-act="admDelAdmin" data-id="${esc(a.id)}" data-name="${esc(disp(a.email))}">Quitar</button></li>`).join('')}</ul>
+    <p class="note">El administrador principal está definido en las reglas de Firestore y no se puede quitar desde acá.</p></div>
+  <form class="panel" data-form="newadmin" novalidate><h3>Agregar administrador</h3>
+    <div class="form-grid"><div class="field"><label for="n-u">Usuario o correo</label><input class="in" id="n-u" name="username" autocomplete="off" placeholder="ej.: maria"></div>
+    <div class="field"><label for="n-p">Contraseña (mínimo 6)</label><input class="in" id="n-p" name="password" type="password" autocomplete="new-password"></div></div>
+    <p class="err" data-err hidden role="alert"></p><button type="submit" class="btn btn-primary">Crear administrador</button>
+    <p class="note" style="margin-top:10px">Crea la cuenta y le da permiso para editar productos, precios y pedidos. Requiere que el registro esté activado en Firebase (Authentication > Configuración > Acciones del usuario) y las reglas nuevas publicadas.</p></form>`;
 }
 
 </script>
