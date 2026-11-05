@@ -1,6 +1,6 @@
 // Prueba local de la lógica de mensajes y envío (con fetch simulado). Uso: node test.js
 const assert = require('assert');
-const { verifyItems, buildMessage, sendWhatsApp } = require('./lib');
+const { verifyItems, priceOrder, buildMessage, sendWhatsApp } = require('./lib');
 
 const catalog = new Map([['a', { price: 890 }], ['b', { price: 2490 }]]);
 
@@ -17,6 +17,16 @@ assert.strictEqual(verifyItems([{ id: 'zzz', name: 'X', price: 5, qty: 1 }], cat
 
 const msg = buildMessage({ code: 'P-1', ...v, customer: { name: 'Ana', phone: '099123456', delivery: 'envio', address: 'Calle 1', zone: 'Dolores', payment: 'Efectivo', note: 'Tocar timbre' }, storeName: 'Nodo', shipping: 100 });
 assert.ok(msg.includes('Nuevo pedido P-1') && msg.includes('Envío a: Calle 1 (Dolores)') && msg.includes('Envío: $ 100') && msg.includes('Total: $ 1.880') && msg.includes('Pago: Efectivo') && msg.includes('⚠️'));
+
+// Cupones y envío gratis
+const cfg = { shippingZones: [{ name: 'Mercedes', cost: 0 }, { name: 'Dolores', cost: 100 }], coupons: [{ code: 'HOLA', type: 'pct', value: 10 }, { code: 'FIJO', type: 'fix', value: 5000 }], freeShippingFrom: 3000 };
+let pr = priceOrder({ itemsTotal: 1000, couponCode: 'hola', customer: { delivery: 'envio', zone: 'Dolores' }, settings: cfg });
+assert.deepStrictEqual([pr.discount, pr.shipping, pr.total], [100, 100, 1000]);
+pr = priceOrder({ itemsTotal: 3500, couponCode: '', customer: { delivery: 'envio', zone: 'Dolores' }, settings: cfg });
+assert.strictEqual(pr.shipping, 0);
+pr = priceOrder({ itemsTotal: 1000, couponCode: 'FIJO', customer: { delivery: 'retiro' }, settings: cfg });
+assert.deepStrictEqual([pr.discount, pr.total], [1000, 0]);
+assert.strictEqual(priceOrder({ itemsTotal: 1000, couponCode: 'NOEXISTE', customer: {}, settings: cfg }).discount, 0);
 
 (async () => {
   // CallMeBot

@@ -4,7 +4,7 @@ const { onDocumentCreated } = require('firebase-functions/v2/firestore');
 const { defineSecret, defineString } = require('firebase-functions/params');
 const { logger } = require('firebase-functions/v2');
 const admin = require('firebase-admin');
-const { verifyItems, buildMessage, sendWhatsApp } = require('./lib');
+const { verifyItems, priceOrder, buildMessage, sendWhatsApp } = require('./lib');
 
 admin.initializeApp();
 
@@ -35,11 +35,10 @@ exports.notifyNewOrder = onDocumentCreated(
 
       // Envío: se recalcula con las zonas actuales de los ajustes
       const st0 = await db.collection('settings').doc('store').get();
-      const zones = (st0.exists && st0.data().shippingZones) || [];
       const c = order.customer || {};
-      const zone = c.delivery === 'envio' ? zones.find(z => z && z.name === c.zone) : null;
-      const shipping = zone ? Math.max(0, Number(zone.cost) || 0) : 0;
-      v.shipping = shipping;
+      const pr = priceOrder({ itemsTotal: v.verifiedTotal, couponCode: order.coupon, customer: c, settings: st0.exists ? st0.data() : {} });
+      const shipping = pr.shipping;
+      v.shipping = shipping; v.discount = pr.discount; v.coupon = pr.coupon;
 
       // Stock: se descuenta una sola vez por pedido (transacción)
       try {
@@ -48,12 +47,10 @@ exports.notifyNewOrder = onDocumentCreated(
           if (!o.exists || o.data().stockApplied) return;
           const refs = ids.map(id => db.collection('products').doc(id));
           const ps = refs.length ? await tx.getAll(...refs) : [];
-          for (const it of order.items || []) {
-            const p = ps.find(d => d.id === it.id);
-            if (p && p.exists && p.data().stock !== null && p.data().stock !== undefined) {
-              const left = Math.max(0, Number(p.data().stock) - Number(it.qty || 0));
-              tx.update(p.ref, { stock: left });
-            }
+          const tot = {}; for (const it of order.items || []) tot[it.id] = (tot[it.id] || 0) + Number(it.qty || 0); // varias variantes suman
+          for (const [pid, q] of Object.entries(tot)) {
+            const p = ps.find(d => d.id === pid);
+            if (p && p.exists && p.data().stock !== null && p.data().stock !== undefined) tx.update(p.ref, { stock: Math.max(0, Number(p.data().stock) - q) });
           }
           tx.update(snap.ref, { stockApplied: true });
         });
@@ -70,7 +67,7 @@ exports.notifyNewOrder = onDocumentCreated(
       }, text);
 
       await snap.ref.update({
-        verifiedTotal: v.verifiedTotal + shipping, priceMismatch: v.mismatch,
+        verifiedTotal: pr.total, priceMismatch: v.mismatch,
         whatsapp: { sent: true, provider: WA_PROVIDER.value(), at: admin.firestore.FieldValue.serverTimestamp() }
       });
       logger.info('Pedido notificado', { order: order.code });

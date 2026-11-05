@@ -466,6 +466,25 @@ body.is-admin .top, body.is-admin .catnav, body.is-admin .perks, body.is-admin .
 .gal-it img { width: 130px; height: 100px; object-fit: contain; background: #fff; border: 1px solid var(--line); border-radius: 10px; }
 .gal-b { display: grid; gap: 4px; }
 .gal-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; } .gal-add .in { flex: 1; min-width: 200px; }
+.rowt.disc{color:#1d7a46;font-weight:600}
+.coupon{display:flex;gap:8px;align-items:center;margin-bottom:10px}.coupon .in{flex:1;text-transform:uppercase}
+.lowst{color:#c2410c}
+.vgrp{border:0;padding:0;margin:14px 0 0}.vgrp legend{font-weight:700;font-size:.9rem;margin-bottom:6px;padding:0}
+.vopts{display:flex;flex-wrap:wrap;gap:8px}
+.vopts label{cursor:pointer}.vopts input{position:absolute;opacity:0;pointer-events:none}
+.vopts span{display:inline-block;min-width:44px;text-align:center;padding:8px 14px;border:1.5px solid #cfd5df;border-radius:10px;background:#fff;font-weight:600;font-size:.9rem}
+.vopts input:checked+span{border-color:var(--cobalt,#2347F5);background:var(--cobalt,#2347F5);color:var(--on-brand,#fff)}
+.vopts input:focus-visible+span{outline:3px solid #8ab4ff;outline-offset:2px}
+.line-v{font-size:.82rem;color:#5b6677;margin:2px 0}
+/* Producto agotado: se ve apagado y marcado */
+.card.is-out .card-img img,.pd-img.is-out>img{filter:grayscale(1);opacity:.55}
+.card.is-out .card-img{background:#e8eaee}
+.card.is-out .card-t,.card.is-out .card-meta,.card.is-out .price strong{color:#8a93a1}
+.card.is-out .price s{display:none}
+.card.is-out .btn{background:#d5d9e0;color:#6b7482;border-color:#d5d9e0;cursor:not-allowed}
+.card.is-out .tag{display:none}
+.card .out{background:rgba(60,66,78,.88);letter-spacing:.02em}
+.sugg .sg-t small{color:#a15c00}
 
 </style>
 </head>
@@ -689,7 +708,12 @@ const DEFAULT_SETTINGS = {
   storeName: 'Nodo Tecno',
   tagline: 'Tecnología y electrodomésticos para tu casa',
   perks: ['Hacé tu pedido online y coordinamos la entrega', 'Retiro en el local', 'Atención personalizada por WhatsApp'],
-  payMethods: ['Efectivo', 'Transferencia bancaria', 'Tarjeta en el local'],
+  payMethods: ['Efectivo', 'Transferencia bancaria'],
+  payPickup: ['Tarjeta en el local'],
+  payDelivery: ['Tarjeta en domicilio (POS)'],
+  showShipping: true,
+  freeShippingFrom: 0,
+  coupons: [],
   footerInfo: '',
   linkFallback: false,
   waNumber: '',
@@ -1040,14 +1064,33 @@ function shippingFor(c) {
   return { cost, label: cost > 0 ? money(cost) : 'Sin costo', known: true };
 }
 
+/* Cupones y envío gratis (misma lógica que usa la Cloud Function para verificar) */
+const couponList = () => (Array.isArray(S().coupons) ? S().coupons : []).filter(c => c && c.code);
+const findCoupon = code => { const k = String(code || '').trim().toUpperCase(); return k ? couponList().find(c => String(c.code).toUpperCase() === k) : null; };
+function pricing(c) {
+  const items = cartTotal(), cp = findCoupon(state.coupon);
+  const discount = cp ? Math.min(items, cp.type === 'pct' ? Math.round(items * Number(cp.value) / 100) : Number(cp.value) || 0) : 0, base = items - discount;
+  let sh = shippingFor({ delivery: c.delivery, zone: c.zone || zones()[0]?.name });
+  const free = Number(S().freeShippingFrom) || 0;
+  if (c.delivery === 'envio' && sh.known && free > 0 && base >= free && sh.cost > 0) sh = { cost: 0, label: 'Gratis', known: true };
+  const left = c.delivery === 'envio' && sh.known && free > 0 && base < free ? free - base : 0;
+  return { items, discount, coupon: cp ? cp.code : '', sh, total: base + sh.cost, left };
+}
+
 /* ───────── Carrito ───────── */
+/* Una línea del carrito = producto + variante elegida. Clave: "idProducto" o "idProducto::Talle: M · Color: Negro" */
+const lineKey = (id, label) => label ? id + '::' + label : id;
+const splitKey = k => { const i = String(k).indexOf('::'); return i < 0 ? [String(k), ''] : [k.slice(0, i), k.slice(i + 2)]; };
 function cartLines() {
-  const out = [];
-  for (const [id, q] of Object.entries(state.cart)) {
-    const p = activeProducts().find(x => x.id === id);
+  const out = [], used = {};
+  for (const [key, q] of Object.entries(state.cart)) {
+    const [pid, label] = splitKey(key);
+    const p = activeProducts().find(x => x.id === pid);
     if (!p) continue;
-    const qty = Math.min(Number(q) || 0, stockOf(p), maxPer());
-    if (qty > 0) out.push({ p, qty, sub: p.price * qty });
+    // el stock y el tope por producto se reparten entre todas sus variantes
+    const room = Math.max(0, Math.min(stockOf(p), maxPer()) - (used[pid] || 0));
+    const qty = Math.min(Number(q) || 0, room);
+    if (qty > 0) { used[pid] = (used[pid] || 0) + qty; out.push({ key, p, qty, label, sub: p.price * qty }); }
   }
   return out;
 }
@@ -1055,27 +1098,31 @@ const cartCount = () => cartLines().reduce((a, l) => a + l.qty, 0);
 const cartTotal = () => cartLines().reduce((a, l) => a + l.sub, 0);
 
 /* Cambia la cantidad respetando stock, tope por producto y tope de unidades por pedido. Devuelve el motivo si recortó. */
-function setQty(id, qty) {
-  const p = activeProducts().find(x => x.id === id);
+function setQty(key, qty) {
+  const [pid] = splitKey(key);
+  const p = activeProducts().find(x => x.id === pid);
   if (!p) return '';
   let reason = '';
   qty = Math.max(0, qty);
-  if (qty > stockOf(p)) { qty = stockOf(p); reason = 'stock'; toast(`Solo quedan ${stockOf(p)} unidades de este producto.`, { bad: true }); }
-  if (qty > maxPer()) { qty = maxPer(); reason = 'per'; toast(`Podés llevar hasta ${maxPer()} unidades de cada producto por pedido. Si necesitás más, escribinos por WhatsApp.`, { bad: true }); }
-  const others = cartLines().filter(l => l.p.id !== id).reduce((a, l) => a + l.qty, 0);
+  const sib = cartLines().filter(l => l.p.id === pid && l.key !== key).reduce((a, l) => a + l.qty, 0); // otras variantes del mismo producto
+  if (qty > stockOf(p) - sib) { qty = Math.max(0, stockOf(p) - sib); reason = 'stock'; toast(`Solo quedan ${stockOf(p)} unidades de este producto.`, { bad: true }); }
+  if (qty > maxPer() - sib) { qty = Math.max(0, maxPer() - sib); reason = 'per'; toast(`Podés llevar hasta ${maxPer()} unidades de cada producto por pedido. Si necesitás más, escribinos por WhatsApp.`, { bad: true }); }
+  const others = cartLines().filter(l => l.key !== key).reduce((a, l) => a + l.qty, 0);
   if (qty > Math.max(0, maxUnits() - others)) { qty = Math.max(0, maxUnits() - others); reason = 'units'; toast(`Cada pedido admite hasta ${maxUnits()} unidades en total. Para cantidades mayores, escribinos por WhatsApp.`, { bad: true }); }
-  if (qty === 0) delete state.cart[id]; else state.cart[id] = qty;
+  if (qty === 0) delete state.cart[key]; else state.cart[key] = qty;
   saveCart(); renderCartBadge(); if ($('#dlgCart').open) renderCart();
   return reason;
 }
-function addToCart(id, n = 1) {
-  const p = activeProducts().find(x => x.id === id);
+function addToCart(key, n = 1) {
+  const [pid] = splitKey(key);
+  const p = activeProducts().find(x => x.id === pid);
   if (!p) return;
   if (stockOf(p) <= 0) return toast('Este producto no tiene stock.', { bad: true });
-  if (setQty(id, (state.cart[id] || 0) + n)) return;
+  if (setQty(key, (state.cart[key] || 0) + n)) return;
   const b = $('#cartBtn'); b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump');
   toast('Agregado al carrito', { label: 'Ver carrito', fn: openCart });
 }
+const prodVariants = p => (Array.isArray(p.variants) ? p.variants : []).filter(g => g && g.name && Array.isArray(g.options) && g.options.length);
 function renderCartBadge() {
   $('#cartN').textContent = $('#cartFabN').textContent = cartCount();
   $('#cartT').textContent = money(cartTotal());
@@ -1136,14 +1183,14 @@ function card(p) {
       <p class="card-meta">${esc(p.brand || c.name)}</p>
       <h3 class="card-t"><button type="button" class="linkish" data-act="open" data-id="${esc(p.id)}">${esc(p.name)}</button></h3>
       <div class="price">${offer ? `<s>${money(p.oldPrice)}</s>` : ''}<strong>${money(p.price)}</strong></div>
-      <button type="button" class="btn btn-primary" data-act="add" data-id="${esc(p.id)}" ${out ? 'disabled' : ''}>${out ? 'Sin stock' : 'Agregar al carrito'}</button>
+      <button type="button" class="btn btn-primary" data-act="add" data-id="${esc(p.id)}" ${out ? 'disabled' : ''}>${out ? 'Sin stock' : prodVariants(p).length ? 'Elegir opciones' : 'Agregar al carrito'}</button>
     </div>
   </article>`;
 }
 const skeletons = n => `<div class="grid">${'<div class="skel"></div>'.repeat(n)}</div>`;
 
 function sortList(list, keepRelevance) {
-  if (keepRelevance && state.sort === 'rel') return [...list];
+  if (keepRelevance && state.sort === 'rel') return [...list].sort((a, b) => (stockOf(a) <= 0) - (stockOf(b) <= 0));
   const s = state.sort, byNew = (a, b) => (b.createdAt || 0) - (a.createdAt || 0);
   const l = [...list];
   if (s === 'asc') l.sort((a, b) => a.price - b.price);
@@ -1151,7 +1198,7 @@ function sortList(list, keepRelevance) {
   else if (s === 'disc') l.sort((a, b) => (onOffer(b) ? pct(b) : 0) - (onOffer(a) ? pct(a) : 0));
   else if (s === 'az') l.sort((a, b) => a.name.localeCompare(b.name, 'es'));
   else l.sort(byNew);
-  return l;
+  return l.sort((a, b) => (stockOf(a) <= 0) - (stockOf(b) <= 0)); // los agotados van al final
 }
 
 function heroHTML() {
@@ -1308,7 +1355,7 @@ function showSugg() {
   if (!q || state.route.name === 'admin') return hideSugg();
   const res = searchProducts(q, activeProducts()).slice(0, 6);
   if (!res.length) { u.innerHTML = `<li class="sugg-none">No encontramos “${esc(q)}”. Probá con otra palabra.</li>`; u.hidden = false; return; }
-  u.innerHTML = res.map(p => `<li><button type="button" data-act="sugg" data-id="${esc(p.id)}"><img src="${esc(imgOf(p))}" alt=""><span class="sg-t">${esc(p.name)}</span><span class="sg-p">${money(p.price)}</span></button></li>`).join('');
+  u.innerHTML = res.map(p => `<li><button type="button" data-act="sugg" data-id="${esc(p.id)}"><img src="${esc(imgOf(p))}" alt=""><span class="sg-t">${esc(p.name)}</span><span class="sg-p">${stockOf(p) <= 0 ? "Sin stock" : money(p.price)}</span></button></li>`).join('');
   u.hidden = false;
 }
 
@@ -1371,15 +1418,16 @@ function openProduct(id) {
   if (!p) return;
   pdQty = 1;
   const c = catOf(p), st = stockOf(p), offer = onOffer(p), imgs = productImages(p);
-  const stock = st <= 0 ? '<p class="stock none">Sin stock</p>' : st <= 5 ? `<p class="stock low">Quedan ${st} unidades</p>` : '<p class="stock">Disponible</p>';
+  const stock = st <= 0 ? `<p class="stock none">Sin stock por el momento</p>${contactNum() ? `<p><a class="btn btn-line btn-sm" target="_blank" rel="noopener" href="${waLink('Hola, quiero consultar cuándo vuelve a haber stock de: ' + p.name)}">Consultar disponibilidad por WhatsApp</a></p>` : ''}` : st <= 5 ? `<p class="stock low">Quedan ${st} unidades</p>` : '<p class="stock">Disponible</p>';
   const specs = String(p.specs || '').split('\n').map(s => s.trim()).filter(Boolean);
   $('#dlgProduct').innerHTML = `<button type="button" class="dlg-x" data-act="closeDlg" aria-label="Cerrar">×</button>
-    <div class="pd"><div class="pd-img" style="--tint:${c.tint}"><img id="pdMain" src="${esc(imgs[0])}" alt="${esc(p.name)}">${offer ? `<span class="tag">-${pct(p)}%</span>` : ''}
+    <div class="pd"><div class="pd-img ${st <= 0 ? 'is-out' : ''}" style="--tint:${c.tint}"><img id="pdMain" src="${esc(imgs[0])}" alt="${esc(p.name)}">${offer ? `<span class="tag">-${pct(p)}%</span>` : ''}
       ${imgs.length > 1 ? `<div class="thumbs" role="group" aria-label="Fotos del producto">${imgs.map((u, i) => `<button type="button" data-act="gal" data-id="${esc(p.id)}" data-i="${i}" aria-label="Ver foto ${i + 1}" aria-current="${i === 0}"><img src="${esc(u)}" alt=""></button>`).join('')}</div>` : ''}</div>
     <div class="pd-b"><p class="card-meta">${esc([p.brand, p.sub].filter(Boolean).join(' · ') || c.name)}</p><h2>${esc(p.name)}</h2>
       <div class="pd-price"><strong>${money(p.price)}</strong>${offer ? `<s>${money(p.oldPrice)}</s>` : ''}</div>${stock}
       ${p.description ? `<p class="muted">${esc(p.description)}</p>` : ''}
       ${specs.length ? `<ul class="specs">${specs.map(s => `<li>${esc(s)}</li>`).join('')}</ul>` : ''}
+      ${prodVariants(p).map((g, gi) => `<fieldset class="vgrp" data-g="${esc(g.name)}"><legend>${esc(g.name)}</legend><div class="vopts">${g.options.map(o => `<label><input type="radio" name="v${gi}" value="${esc(o)}"><span>${esc(o)}</span></label>`).join('')}</div></fieldset>`).join('')}
       <div class="buy"><div class="qty" role="group" aria-label="Cantidad"><button type="button" data-act="pdMinus" aria-label="Menos">−</button><output id="pdQ" aria-live="polite">1</output><button type="button" data-act="pdPlus" aria-label="Más">+</button></div>
       <button type="button" class="btn btn-primary" data-act="pdAdd" data-id="${esc(p.id)}" ${st <= 0 ? 'disabled' : ''}>Agregar al carrito</button></div>
       <button type="button" class="btn btn-line btn-sm share" data-act="share" data-id="${esc(p.id)}">Compartir este producto</button></div></div>`;
@@ -1416,16 +1464,17 @@ function renderCart() {
     return;
   }
   if (state.cartStep === 'checkout') {
-    const v = state.form || {};
+    const v = state.form || {}; state.payFor = v.delivery === 'envio' ? 'envio' : 'retiro';
     d.innerHTML = head('', true) + `<form id="checkoutForm" class="dr-body" style="padding-top:18px" novalidate>
       <h2 style="font:800 22px var(--font-d);margin-bottom:14px">Tus datos</h2>
       <div class="field"><label for="f-name">Nombre y apellido</label><input class="in" id="f-name" name="name" autocomplete="name" required value="${esc(v.name)}"></div>
       <div class="field"><label for="f-phone">Teléfono o WhatsApp</label><input class="in" id="f-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" required value="${esc(v.phone)}"><small>Te contactamos a este número para confirmar el pedido.</small></div>
       <div class="field"><span>¿Cómo lo recibís?</span><div class="radios"><label><input type="radio" name="delivery" value="retiro" ${v.delivery !== 'envio' ? 'checked' : ''}> Retiro en el local</label><label><input type="radio" name="delivery" value="envio" ${v.delivery === 'envio' ? 'checked' : ''}> Envío a domicilio</label></div></div>
-      ${payList().length ? `<div class="field"><span>¿Cómo querés pagar?</span><div class="radios" role="radiogroup">${payList().map(m => `<label><input type="radio" name="payment" value="${esc(m)}" ${v.payment === m ? 'checked' : ''}> ${esc(m)}</label>`).join('')}</div></div>` : ''}
-      <div class="field" id="zoneField" ${v.delivery === 'envio' ? '' : 'hidden'}><label for="f-zone">Localidad</label><select class="in" id="f-zone" name="zone">${zones().map(z => `<option value="${esc(z.name)}" ${(v.zone || zones()[0]?.name) === z.name ? 'selected' : ''}>${esc(z.name)} — ${Number(z.cost) > 0 ? money(z.cost) : 'sin costo de envío'}</option>`).join('')}<option value="${OTRA}" ${v.zone === OTRA ? 'selected' : ''}>Otra localidad (costo a coordinar)</option></select></div>
+      <div class="field" id="payBox">${payHTML(v.delivery === 'envio' ? 'envio' : 'retiro', v.payment)}</div>
+      <div class="field" id="zoneField" ${v.delivery === 'envio' ? '' : 'hidden'}><label for="f-zone">Localidad</label><select class="in" id="f-zone" name="zone">${zones().map(z => `<option value="${esc(z.name)}" ${(v.zone || zones()[0]?.name) === z.name ? 'selected' : ''}>${esc(z.name)}${S().showShipping === false ? '' : ' — ' + (Number(z.cost) > 0 ? money(z.cost) : 'sin costo de envío')}</option>`).join('')}<option value="${OTRA}" ${v.zone === OTRA ? 'selected' : ''}>Otra localidad (costo a coordinar)</option></select></div>
       <div class="field" id="addrField" ${v.delivery === 'envio' ? '' : 'hidden'}><label for="f-addr">Dirección de entrega</label><input class="in" id="f-addr" name="address" autocomplete="street-address" value="${esc(v.address)}"></div>
       <div class="hp" aria-hidden="true"><label>No completar este campo<input name="website" tabindex="-1" autocomplete="off"></label></div>
+      <label class="chk" style="margin:0 0 12px"><input type="checkbox" name="remember" ${v.remember === false ? '' : 'checked'}> Recordar mis datos en este dispositivo</label>
       <div class="field"><label for="f-note">Comentarios (opcional)</label><textarea class="in" id="f-note" name="note" rows="2">${esc(v.note)}</textarea></div>
       <p class="err" id="orderErr" role="alert" ${state.orderErr ? '' : 'hidden'}>${esc(state.orderErr)}</p>
     </form>
@@ -1434,64 +1483,71 @@ function renderCart() {
     <p class="note">Te confirmamos el pedido por WhatsApp y coordinamos el pago y la entrega.</p></div>`;
     return;
   }
-  d.innerHTML = head(`Tu carrito (${cartCount()})`) + `<div class="dr-body">${lines.map(({ p, qty, sub }) => `<div class="line">
+  d.innerHTML = head(`Tu carrito (${cartCount()})`) + `<div class="dr-body">${lines.map(({ key, p, qty, sub, label }) => `<div class="line">
       <img src="${esc(imgOf(p))}" alt="" style="--tint:${catOf(p).tint}">
-      <div><p class="line-t">${esc(p.name)}</p><p class="line-u">${money(p.price)} c/u</p>
-      <div class="line-r"><div class="qty sm" role="group" aria-label="Cantidad de ${esc(p.name)}"><button type="button" data-act="lineMinus" data-id="${esc(p.id)}" aria-label="Menos">−</button><output>${qty}</output><button type="button" data-act="linePlus" data-id="${esc(p.id)}" aria-label="Más">+</button></div><span class="line-sub">${money(sub)}</span></div>
-      <button type="button" class="rm" data-act="lineRm" data-id="${esc(p.id)}">Quitar</button></div></div>`).join('')}</div>
-    <div class="dr-f"><div class="total"><span>Total</span><strong>${money(total)}</strong></div>
+      <div><p class="line-t">${esc(p.name)}</p>${label ? `<p class="line-v">${esc(label)}</p>` : ''}<p class="line-u">${money(p.price)} c/u${Number.isFinite(stockOf(p)) && stockOf(p) <= 5 ? ` · <b class="lowst">Quedan ${stockOf(p)}</b>` : ''}</p>
+      <div class="line-r"><div class="qty sm" role="group" aria-label="Cantidad de ${esc(p.name)}"><button type="button" data-act="lineMinus" data-id="${esc(key)}" aria-label="Menos">−</button><output>${qty}</output><button type="button" data-act="linePlus" data-id="${esc(key)}" aria-label="Más">+</button></div><span class="line-sub">${money(sub)}</span></div>
+      <button type="button" class="rm" data-act="lineRm" data-id="${esc(key)}">Quitar</button></div></div>`).join('')}</div>
+    <div class="dr-f">${couponList().length ? `<form class="coupon" id="couponForm">${state.coupon && findCoupon(state.coupon) ? `<span class="chipst ok">Cupón ${esc(findCoupon(state.coupon).code)} aplicado</span><button type="button" class="rm" data-act="rmCoupon">Quitar</button>` : `<input class="in" id="cpIn" placeholder="Código de descuento" autocomplete="off" aria-label="Código de descuento"><button type="submit" class="btn btn-line btn-sm">Aplicar</button>`}</form><p class="err" id="cpErr" role="alert" hidden></p>` : ''}
+    ${(() => { const p = pricing({ delivery: 'retiro' }); return p.discount ? `<div class="rowt"><span>Productos</span><span>${money(p.items)}</span></div><div class="rowt disc"><span>Descuento (${esc(p.coupon)})</span><span>− ${money(p.discount)}</span></div>` : ''; })()}<div class="total"><span>Total</span><strong>${money(pricing({ delivery: 'retiro' }).total)}</strong></div>${Number(S().freeShippingFrom) > 0 ? `<p class="note">Envío gratis en compras desde ${money(S().freeShippingFrom)}.</p>` : ''}
     <button type="button" class="btn btn-primary" data-act="checkout">Finalizar compra</button>
     <button type="button" class="rm" data-act="clearCart">Vaciar carrito</button></div>`;
 }
 
 function ckTotals(c) {
-  const sh = shippingFor({ delivery: c.delivery, zone: c.zone || zones()[0]?.name }), items = cartTotal();
-  return `<div class="rowt"><span>Productos</span><span>${money(items)}</span></div><div class="rowt"><span>Envío</span><span>${sh.label}</span></div><div class="total"><span>Total a pagar</span><strong>${money(items + sh.cost)}</strong></div>${sh.known ? '' : '<p class="note">El costo de envío a esa localidad lo coordinamos con vos por WhatsApp.</p>'}`;
+  const p = pricing(c);
+  return `<div class="rowt"><span>Productos</span><span>${money(p.items)}</span></div>${p.discount ? `<div class="rowt disc"><span>Descuento (${esc(p.coupon)})</span><span>− ${money(p.discount)}</span></div>` : ''}<div class="rowt"><span>Envío</span><span>${p.sh.label}</span></div><div class="total"><span>Total a pagar</span><strong>${money(p.total)}</strong></div>${p.sh.known ? '' : '<p class="note">El costo de envío a esa localidad lo coordinamos con vos por WhatsApp.</p>'}${p.left > 0 ? `<p class="note">Sumá ${money(p.left)} más y el envío es gratis.</p>` : ''}`;
 }
 function updateCheckout(form) {
   const c = readCheckout(form); state.form = { ...(state.form || {}), ...c };
   $('#addrField').hidden = $('#zoneField').hidden = c.delivery !== 'envio';
   $('#ckTotals').innerHTML = ckTotals(c);
+  if (state.payFor !== c.delivery) { state.payFor = c.delivery; const keep = payList(c.delivery).includes(c.payment) ? c.payment : ''; $('#payBox').innerHTML = payHTML(c.delivery, keep); }
 }
-const payList = () => (state.settings.payMethods || []).map(x => String(x).trim()).filter(Boolean);
+const clean = l => (Array.isArray(l) ? l : []).map(x => String(x).trim()).filter(Boolean);
+/* Medios de pago según cómo recibe el cliente: los comunes + los solo-retiro o solo-envío */
+const payList = delivery => [...new Set([...clean(state.settings.payMethods), ...clean(delivery === 'envio' ? state.settings.payDelivery : state.settings.payPickup)])];
+const payHTML = (delivery, sel) => { const l = payList(delivery); return l.length ? `<span>¿Cómo querés pagar?</span><div class="radios" role="radiogroup">${l.map(m => `<label><input type="radio" name="payment" value="${esc(m)}" ${sel === m ? 'checked' : ''}> ${esc(m)}</label>`).join('')}</div>` : ''; };
 function readCheckout(form) {
   const f = new FormData(form);
-  return { name: String(f.get('name') || '').trim(), phone: String(f.get('phone') || '').trim(), delivery: f.get('delivery') === 'envio' ? 'envio' : 'retiro', address: String(f.get('address') || '').trim(), zone: String(f.get('zone') || ''), hp: String(f.get('website') || ''), payment: String(f.get('payment') || '').trim(), note: String(f.get('note') || '').trim() };
+  return { name: String(f.get('name') || '').trim(), phone: String(f.get('phone') || '').trim(), delivery: f.get('delivery') === 'envio' ? 'envio' : 'retiro', address: String(f.get('address') || '').trim(), zone: String(f.get('zone') || ''), hp: String(f.get('website') || ''), remember: f.get('remember') === 'on', payment: String(f.get('payment') || '').trim(), note: String(f.get('note') || '').trim() };
 }
 function waText(order, code) {
   const l = order.items.map(i => `• ${i.qty} x ${i.name} — ${money(i.price * i.qty)}`).join('\n');
   const c = order.customer;
-  return `Hola, quiero hacer este pedido (${code}):\n${l}\n${order.shipping ? 'Envío: ' + money(order.shipping) + '\n' : ''}Total: ${money(order.total)}\n\nNombre: ${c.name}\nTeléfono: ${c.phone}\n${c.payment ? 'Pago: ' + c.payment + '\n' : ''}${c.delivery === 'envio' ? 'Envío a: ' + c.address + (c.zone ? ' (' + c.zone + ')' : '') : 'Retiro en el local'}${c.note ? '\nComentarios: ' + c.note : ''}`;
+  return `Hola, quiero hacer este pedido (${code}):\n${l}\n${order.shipping ? 'Envío: ' + money(order.shipping) + '\n' : ''}${order.discount ? 'Descuento (' + order.coupon + '): -' + money(order.discount) + '\n' : ''}Total: ${money(order.total)}\n\nNombre: ${c.name}\nTeléfono: ${c.phone}\n${c.payment ? 'Pago: ' + c.payment + '\n' : ''}${c.delivery === 'envio' ? 'Envío a: ' + c.address + (c.zone ? ' (' + c.zone + ')' : '') : 'Retiro en el local'}${c.note ? '\nComentarios: ' + c.note : ''}`;
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function submitOrder(form) {
   if (state.sending) return;
-  const c = readCheckout(form), hp = c.hp; delete c.hp; state.form = { ...c };
+  const c = readCheckout(form), hp = c.hp, remember = c.remember; delete c.hp; delete c.remember; state.form = { ...c, remember };
   const fail = m => { state.orderErr = m; renderCart(); $('#orderErr')?.focus?.(); };
   if (!c.name) return fail('Escribí tu nombre.');
   if (digits(c.phone).length < 7) return fail('Escribí un teléfono válido para poder contactarte.');
   if (c.delivery === 'envio' && !c.address) return fail('Escribí la dirección de entrega.');
-  if (payList().length && !c.payment) return fail('Elegí cómo querés pagar.');
-  if (!payList().length) delete c.payment;
+  if (payList(c.delivery).length && !c.payment) return fail('Elegí cómo querés pagar.');
+  if (!payList(c.delivery).includes(c.payment)) delete c.payment;
   const lines = cartLines();
   if (!lines.length) return fail('Tu carrito está vacío.');
   if (lines.reduce((a, l) => a + l.qty, 0) > maxUnits()) return fail(`Cada pedido admite hasta ${maxUnits()} unidades. Quitá algunas o escribinos por WhatsApp.`);
 
   // Envío: localidad y costo
   if (c.delivery === 'envio') { if (c.zone === OTRA || !zones().some(z => z.name === c.zone)) c.zone = c.zone === OTRA || !zones().length ? 'Otra localidad (a coordinar)' : zones()[0].name; } else delete c.zone;
-  const sh = shippingFor({ delivery: c.delivery, zone: c.zone });
+  const pr = pricing({ delivery: c.delivery, zone: c.zone }), sh = pr.sh;
   const order = {
     customer: c,
-    items: lines.map(({ p, qty }) => ({ id: p.id, name: p.name, price: p.price, qty })),
+    items: lines.map(({ p, qty, label }) => ({ id: p.id, name: p.name + (label ? ' (' + label + ')' : ''), price: p.price, qty })),
     itemCount: lines.reduce((a, l) => a + l.qty, 0),
     shipping: sh.cost,
-    total: cartTotal() + sh.cost
+    total: pr.total
   };
+  if (pr.discount > 0) { order.discount = pr.discount; order.coupon = pr.coupon; }
 
   // Pedido repetido (por ejemplo, tocar dos veces): no se vuelve a enviar
   const sig = JSON.stringify([order.items.map(i => i.id + ':' + i.qty).sort(), digits(c.phone)]);
   const last = lsGet('nodo_last');
-  const finish = (code, dup) => { state.sending = false; state.cart = {}; saveCart(); state.form = null; state.doneCode = code; state.dupNote = !!dup; state.cartStep = 'done'; renderCartBadge(); renderCart(); };
+  const finish = (code, dup) => { state.sending = false; state.cart = {}; state.coupon = ''; saveCart(); state.form = null;
+    lsSet('nodo_cust', remember ? { name: c.name, phone: c.phone, address: c.address || '', zone: c.zone || '', delivery: c.delivery } : null); state.doneCode = code; state.dupNote = !!dup; state.cartStep = 'done'; renderCartBadge(); renderCart(); };
   if (last && last.sig === sig && Date.now() - last.at < 180000) return finish(last.code, true);
   // Campo trampa que las personas no ven: si viene completo es un robot
   if (hp) { state.sending = true; renderCart(); await sleep(800); return finish('P-' + Math.random().toString(36).toUpperCase().slice(2, 9)); }
@@ -1518,7 +1574,7 @@ document.addEventListener('click', e => {
   if (t) {
     const id = t.dataset.id, a = t.dataset.act;
     if (a === 'open') openProduct(id);
-    else if (a === 'add') addToCart(id);
+    else if (a === 'add') { const p = activeProducts().find(x => x.id === id); if (p && prodVariants(p).length) openProduct(id); else addToCart(id); }
     else if (a === 'hero') setHero(+t.dataset.i);
     else if (a === 'page') { state.page = +t.dataset.i; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
     else if (a === 'railPrev' || a === 'railNext') { const r = $('#rail'); if (r) r.scrollBy({ left: (a === 'railNext' ? 1 : -1) * r.clientWidth * .8, behavior: 'smooth' }); }
@@ -1532,12 +1588,17 @@ document.addEventListener('click', e => {
     else if (a === 'closeDlg') t.closest('dialog').close();
     else if (a === 'pdMinus') { pdQty = Math.max(1, pdQty - 1); $('#pdQ').textContent = pdQty; }
     else if (a === 'pdPlus') { const p = state.products.find(x => x.id === $('[data-act=pdAdd]').dataset.id); pdQty = Math.min(pdQty + 1, Math.min(stockOf(p), 99)); $('#pdQ').textContent = pdQty; }
-    else if (a === 'pdAdd') { addToCart(id, pdQty); $('#dlgProduct').close(); }
+    else if (a === 'pdAdd') {
+      const parts = [];
+      for (const g of $$('#dlgProduct .vgrp')) { const c = $('input:checked', g); if (!c) return toast(`Elegí ${g.dataset.g.toLowerCase()} antes de agregar.`, { bad: true }); parts.push(g.dataset.g + ': ' + c.value); }
+      addToCart(lineKey(id, parts.join(' · ')), pdQty); $('#dlgProduct').close();
+    }
     else if (a === 'lineMinus') setQty(id, (state.cart[id] || 0) - 1);
     else if (a === 'linePlus') setQty(id, (state.cart[id] || 0) + 1);
     else if (a === 'lineRm') setQty(id, 0);
     else if (a === 'clearCart') askConfirm('¿Vaciar el carrito?', 'Vaciar').then(ok => { if (ok) { state.cart = {}; saveCart(); renderCartBadge(); renderCart(); } });
-    else if (a === 'checkout') { state.cartStep = 'checkout'; state.checkoutAt = Date.now(); renderCart(); }
+    else if (a === 'checkout') { state.cartStep = 'checkout'; state.checkoutAt = Date.now(); if (!state.form) state.form = lsGet('nodo_cust') || null; renderCart(); }
+    else if (a === 'rmCoupon') { state.coupon = ''; renderCart(); }
     else if (a === 'cartBack') { state.cartStep = 'cart'; renderCart(); }
     else if (a.startsWith('adm')) adminClick(a, t, e);
     return;
@@ -1561,6 +1622,10 @@ document.addEventListener('submit', e => {
   else if (f.dataset?.form) { e.preventDefault(); adminSubmit(f); }
   else if (f.id === 'loginForm') { e.preventDefault(); doLogin(f); }
   else if (f.id === 'searchForm') { e.preventDefault(); hideSugg(); }
+  else if (f.id === 'couponForm') {
+    e.preventDefault(); const code = $('#cpIn')?.value.trim(); if (!code) return;
+    if (findCoupon(code)) { state.coupon = findCoupon(code).code; renderCart(); } else { const er = $('#cpErr'); er.textContent = 'Ese código no es válido.'; er.hidden = false; }
+  }
   else if (f.id === 'trackForm') { e.preventDefault(); state.track.auto = f.code.value.trim().toUpperCase(); trackLookup(f.code.value); }
 });
 $('#q').addEventListener('input', e => {
@@ -1583,7 +1648,13 @@ function loadPublic() {
     const s = l.find(x => x.id === 'store');
     state.settings = { ...DEFAULT_SETTINGS, ...(s || {}) };
     if (typeof state.settings.perks === 'string') state.settings.perks = state.settings.perks.split('\n');
-    if (typeof state.settings.payMethods === 'string') state.settings.payMethods = state.settings.payMethods.split('\n');
+    for (const k of ['payMethods', 'payPickup', 'payDelivery']) if (typeof state.settings[k] === 'string') state.settings[k] = state.settings[k].split('\n');
+    { // ajustes viejos: "tarjeta en el local" / "domicilio" estaban mezcladas en la lista general
+      const st = state.settings, all = clean(st.payMethods);
+      const pick = all.filter(m => /en el local/i.test(m)), del = all.filter(m => /domicilio|\bpos\b/i.test(m));
+      st.payMethods = all.filter(m => !pick.includes(m) && !del.includes(m));
+      st.payPickup = [...new Set([...clean(st.payPickup), ...pick])]; st.payDelivery = [...new Set([...clean(st.payDelivery), ...del])];
+    }
     if (!Array.isArray(state.settings.branches)) state.settings.branches = [];
     if (typeof state.settings.hours === 'string') state.settings.hours = state.settings.hours.split('\n');
     softRender();
@@ -1685,9 +1756,10 @@ async function applyPendingStock() {
   try {
     for (const o of pend) {
       await DB.save('orders', o.id, { stockApplied: true }); // se marca primero para no repetir
-      for (const it of o.items || []) {
-        const p = state.products.find(x => x.id === it.id);
-        if (p && p.stock !== null && p.stock !== undefined) await DB.save('products', p.id, { stock: Math.max(0, Number(p.stock) - Number(it.qty || 0)), updatedAt: Date.now() });
+      const tot = {}; for (const it of o.items || []) tot[it.id] = (tot[it.id] || 0) + Number(it.qty || 0); // varias variantes del mismo producto suman
+      for (const [pid, q] of Object.entries(tot)) {
+        const p = state.products.find(x => x.id === pid);
+        if (p && p.stock !== null && p.stock !== undefined) await DB.save('products', p.id, { stock: Math.max(0, Number(p.stock) - q), updatedAt: Date.now() });
       }
     }
   } catch (e) { console.warn('stock', e); } finally { stockBusy = false; }
@@ -1805,6 +1877,7 @@ function openProductForm(id) {
       <div class="field"><label for="f-o">Precio anterior ($)</label><input class="in" id="f-o" name="oldPrice" type="number" min="0" step="any" inputmode="decimal" value="${p.oldPrice ? esc(p.oldPrice) : ''}"><small>Si es mayor que el precio, se muestra como oferta.</small></div>
       <div class="field full"><label for="f-d">Descripción</label><textarea class="in" id="f-d" name="description" rows="3">${esc(p.description)}</textarea></div>
       <div class="field full"><label for="f-sp">Características</label><textarea class="in" id="f-sp" name="specs" rows="4">${esc(p.specs)}</textarea><small>Una por línea. Ej.: Memoria: 16 GB</small></div>
+      <div class="field full"><label for="f-v">Variantes (opcional, una por línea: Grupo: opción, opción)</label><textarea class="in" id="f-v" name="variants" rows="3" placeholder="Talle: S, M, L, XL&#10;Color: Negro, Blanco">${esc(prodVariants(p).map(g => g.name + ': ' + g.options.join(', ')).join('\n'))}</textarea><small>El cliente tiene que elegir una opción de cada grupo antes de agregar al carrito. El stock es el total del producto (se reparte entre las variantes).</small></div>
     </div>
     ${galleryField(p.images && p.images.length ? p.images : (p.image ? [p.image] : []), p.art, catById(p.category).acc)}${artSelect(p.art)}
     <label class="chk"><input type="checkbox" name="active" ${p.active !== false ? 'checked' : ''}> Visible en la tienda</label>
@@ -1889,7 +1962,7 @@ function openOrder(id) {
   const c = o.customer || {};
   const msg = `Hola ${c.name || ''}, te escribimos de ${state.settings.storeName} por tu pedido ${o.code || ''}.`;
   openForm('Pedido ' + (o.code || ''), `<p class="muted">${fmtDate(o.createdAt)} · ${waChip(o)}</p>
-    <table class="ord-items"><tbody>${(o.items || []).map(i => `<tr><td>${esc(i.qty)} × ${esc(i.name)}</td><td>${money(i.price * i.qty)}</td></tr>`).join('')}${o.shipping ? `<tr><td>Envío${c.zone ? ' (' + esc(c.zone) + ')' : ''}</td><td>${money(o.shipping)}</td></tr>` : ''}<tr><td><b>Total</b></td><td style="font-size:18px">${money(o.total)}</td></tr></tbody></table>
+    <table class="ord-items"><tbody>${(o.items || []).map(i => `<tr><td>${esc(i.qty)} × ${esc(i.name)}</td><td>${money(i.price * i.qty)}</td></tr>`).join('')}${o.discount ? `<tr><td>Descuento${o.coupon ? ' (' + esc(o.coupon) + ')' : ''}</td><td>− ${money(o.discount)}</td></tr>` : ''}${o.shipping ? `<tr><td>Envío${c.zone ? ' (' + esc(c.zone) + ')' : ''}</td><td>${money(o.shipping)}</td></tr>` : ''}<tr><td><b>Total</b></td><td style="font-size:18px">${money(o.total)}</td></tr></tbody></table>
     ${o.priceMismatch ? `<p class="err">Atención: los precios del pedido no coinciden con los actuales. Total verificado: ${money(o.verifiedTotal)}.</p>` : ''}
     <p><b>${esc(c.name)}</b><br>${esc(c.phone)}<br>${c.payment ? 'Pago: ' + esc(c.payment) + '<br>' : ''}${c.delivery === 'envio' ? 'Envío a: ' + esc(c.address) + (c.zone ? ' (' + esc(c.zone) + ')' : '') : 'Retiro en el local'}</p>
     ${c.note ? `<p class="muted" style="margin-top:8px">“${esc(c.note)}”</p>` : ''}
@@ -1903,7 +1976,11 @@ function settingsTab() {
     <div class="field"><label for="s-n">Nombre de la tienda</label><input class="in" id="s-n" name="storeName" required value="${esc(s.storeName)}"></div>
     <div class="field"><label for="s-t">Frase corta</label><input class="in" id="s-t" name="tagline" value="${esc(s.tagline)}"></div>
     <div class="field"><label for="s-p">Barra de beneficios (una por línea, máximo 3)</label><textarea class="in" id="s-p" name="perks" rows="3">${esc(perks)}</textarea></div>
-    <div class="field"><label for="s-pm">Medios de pago que aceptás (uno por línea)</label><textarea class="in" id="s-pm" name="payMethods" rows="4">${esc((s.payMethods || []).join('\n'))}</textarea><small>El cliente elige uno al confirmar el pedido. Si lo dejás vacío, no se pregunta.</small></div>
+    <div class="field"><label for="s-pm">Medios de pago para todos (uno por línea)</label><textarea class="in" id="s-pm" name="payMethods" rows="4">${esc((s.payMethods || []).join('\n'))}</textarea><small>El cliente elige uno al confirmar el pedido. Si lo dejás vacío, no se pregunta.</small></div>
+    <div class="field"><label for="s-pp">Solo si retira en el local</label><textarea class="in" id="s-pp" name="payPickup" rows="2">${esc((s.payPickup || []).join('\n'))}</textarea><small>Ej.: Tarjeta en el local.</small></div>
+    <div class="field"><label for="s-pd">Solo si pide envío a domicilio</label><textarea class="in" id="s-pd" name="payDelivery" rows="2">${esc((s.payDelivery || []).join('\n'))}</textarea><small>Ej.: Tarjeta en domicilio (POS).</small></div>
+    <label class="chk" style="margin:6px 0 14px"><input type="checkbox" name="showShipping" ${s.showShipping === false ? '' : 'checked'}> Mostrar costo de envío junto a cada localidad</label>
+    <small class="muted" style="display:block;margin:-8px 0 14px">Si lo desactivás, la lista solo muestra la localidad y el costo aparece abajo, en el total.</small>
     <h3 style="margin-top:22px">Marca y redes</h3>
     <div class="form-grid"><div class="field"><label for="s-bc">Color principal</label><input class="in" id="s-bc" name="brandColor" type="color" value="${esc(/^#[0-9a-f]{6}$/i.test(s.brandColor || '') ? s.brandColor : '#2347F5')}" style="padding:4px"></div>
     <div class="field"><label for="s-lg">Logo (enlace o subir imagen)</label><input class="in" id="s-lg" name="logo" placeholder="https://…" value="${s.logo && !s.logo.startsWith('data:') ? esc(s.logo) : ''}" data-keep="${s.logo && s.logo.startsWith('data:') ? esc(s.logo) : ''}"><label class="btn btn-line btn-sm" style="margin-top:6px">Subir logo<input type="file" accept="image/*" class="sr" data-act="admLogoFile"></label>${s.logo ? '<img src="' + esc(s.logo) + '" alt="Logo actual" style="height:40px;margin-top:8px">' : ''}<small>Vacío = se muestra el nombre del negocio.</small></div></div>
@@ -1918,6 +1995,8 @@ function settingsTab() {
     <div class="field"><label for="s-f">Texto extra en el pie de página (opcional)</label><textarea class="in" id="s-f" name="footerInfo" rows="2">${esc(s.footerInfo)}</textarea></div>
     <h3 style="margin-top:22px">Envíos y límites</h3>
     <div class="field"><label for="s-z">Localidades y costo de envío (una por línea: Localidad | costo)</label><textarea class="in" id="s-z" name="zones" rows="8">${esc((s.shippingZones || []).map(z => z.name + ' | ' + (Number(z.cost) || 0)).join('\n'))}</textarea><small>Costo 0 = sin costo. Los costos por distancia son estimados: ajustalos a tu realidad. Las localidades que no figuren se coordinan por WhatsApp.</small></div>
+    <div class="field"><label for="s-fs">Envío gratis desde (monto, 0 = no usar)</label><input class="in" id="s-fs" name="freeShippingFrom" type="number" min="0" step="1" value="${esc(s.freeShippingFrom || 0)}"><small>Si el pedido (con descuentos) llega a ese monto, el envío es gratis en las localidades con costo.</small></div>
+    <div class="field"><label for="s-cp">Cupones de descuento (uno por línea: CÓDIGO | 10% o CÓDIGO | 200)</label><textarea class="in" id="s-cp" name="coupons" rows="3" placeholder="BIENVENIDO | 10%">${esc((s.coupons || []).map(c => c.code + ' | ' + (c.type === 'pct' ? c.value + '%' : c.value)).join('\n'))}</textarea><small>"10%" descuenta un porcentaje; un número solo descuenta ese monto fijo. Los códigos no se pueden ocultar del todo (quedan en los datos públicos de la tienda): usalos para promociones, no para secretos.</small></div>
     <div class="form-grid"><div class="field"><label for="s-mu">Máximo de unidades por pedido</label><input class="in" id="s-mu" name="maxUnits" type="number" min="1" step="1" value="${esc(s.maxUnits ?? 30)}"></div>
     <div class="field"><label for="s-mp">Máximo de unidades del mismo producto</label><input class="in" id="s-mp" name="maxPerProduct" type="number" min="1" step="1" value="${esc(s.maxPerProduct ?? 10)}"></div></div>
     <h3 style="margin-top:22px">Textos de páginas</h3>
@@ -2041,7 +2120,7 @@ async function adminSubmit(form) {
     if (stock !== null && (Number.isNaN(stock) || stock < 0)) return formErr(form, 'El stock no es válido.');
     let images = []; try { images = JSON.parse(f.get('images') || '[]').filter(x => typeof x === 'string' && x).slice(0, MAX_IMGS); } catch { /* vacío */ }
     if (images.join('').length > 850000) return formErr(form, 'Las fotos pesan demasiado en total (límite de Firestore ~1 MB). Quitá alguna o usá enlaces.');
-    const data = { name: s('name'), category: s('category'), sub: s('sub'), brand: s('brand'), price, oldPrice: old, stock, description: s('description'), specs: String(f.get('specs') || '').trim(), images, image: images[0] || '', art: s('art'), active: f.get('active') === 'on', updatedAt: Date.now() };
+    const data = { name: s('name'), category: s('category'), sub: s('sub'), brand: s('brand'), price, oldPrice: old, stock, description: s('description'), specs: String(f.get('specs') || '').trim(), variants: String(f.get('variants') || '').split('\n').map(l => { const [n, o] = l.split(':'); return { name: (n || '').trim(), options: [...new Set(String(o || '').split(',').map(x => x.trim()).filter(Boolean))].slice(0, 20) }; }).filter(g => g.name && g.options.length).slice(0, 3), images, image: images[0] || '', art: s('art'), active: f.get('active') === 'on', updatedAt: Date.now() };
     if (!id) data.createdAt = Date.now();
     return guarded(async () => { await DB.save('products', id, data); $('#dlgForm').close(); toast('Producto guardado'); }, form);
   }
@@ -2071,11 +2150,13 @@ async function adminSubmit(form) {
     if (!s('storeName')) return formErr(form, 'Escribí el nombre de la tienda.');
     const linkFallback = f.get('linkFallback') === 'on';
     if (linkFallback && digits(s('waNumber')).length < 8) return formErr(form, 'Para activar el respaldo, escribí un número de WhatsApp válido.');
-    const data = { storeName: s('storeName'), tagline: s('tagline'), perks: String(f.get('perks') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 3), footerInfo: String(f.get('footerInfo') || '').trim(), payMethods: String(f.get('payMethods') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 8), linkFallback, waNumber: digits(s('waNumber')),
+    const data = { storeName: s('storeName'), tagline: s('tagline'), perks: String(f.get('perks') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 3), footerInfo: String(f.get('footerInfo') || '').trim(), payMethods: String(f.get('payMethods') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 8), payPickup: String(f.get('payPickup') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 4), payDelivery: String(f.get('payDelivery') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 4), showShipping: f.get('showShipping') === 'on', linkFallback, waNumber: digits(s('waNumber')),
       brandColor: /^#[0-9a-f]{6}$/i.test(s('brandColor')) ? s('brandColor') : '#2347F5', logo: s('logo') || form.logo.dataset.keep || '', instagram: s('instagram'), facebook: s('facebook'),
       branches: String(f.get('branches') || '').split('\n').map(l => { const [n, a, im, lk] = l.split('|').map(x => (x || '').trim()); return { name: n, address: a, image: im, link: lk }; }).filter(b => b.name).slice(0, 6),
       contactWhatsapp: digits(s('contactWhatsapp')), contactEmail: s('contactEmail'), address: s('address'), hours: String(f.get('hours') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 7),
       shippingZones: String(f.get('zones') || '').split('\n').map(l => { const [n, c] = l.split('|'); return { name: (n || '').trim(), cost: Math.max(0, Math.round(num(c) || 0)) }; }).filter(z => z.name).slice(0, 60),
+      freeShippingFrom: Math.max(0, Math.round(num(f.get('freeShippingFrom')) || 0)),
+      coupons: String(f.get('coupons') || '').split('\n').map(l => { const [c, v] = l.split('|').map(x => (x || '').trim()); const pct = /%$/.test(v || ''); const n = num((v || '').replace('%', '')); return { code: (c || '').toUpperCase().replace(/\s+/g, ''), type: pct ? 'pct' : 'fix', value: pct ? Math.min(100, n) : n }; }).filter(c => c.code && c.value > 0).slice(0, 20),
       maxUnits: Math.max(1, Math.floor(num(f.get('maxUnits')) || 30)), maxPerProduct: Math.max(1, Math.floor(num(f.get('maxPerProduct')) || 10)),
       pageServices: String(f.get('pageServices') || '').trim(), pageTerms: String(f.get('pageTerms') || '').trim(), pagePrivacy: String(f.get('pagePrivacy') || '').trim() };
     return guarded(async () => { await DB.save('settings', 'store', data); toast('Ajustes guardados'); }, form);

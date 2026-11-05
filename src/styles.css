@@ -446,3 +446,22 @@ body.is-admin .top, body.is-admin .catnav, body.is-admin .perks, body.is-admin .
 .gal-it img { width: 130px; height: 100px; object-fit: contain; background: #fff; border: 1px solid var(--line); border-radius: 10px; }
 .gal-b { display: grid; gap: 4px; }
 .gal-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; } .gal-add .in { flex: 1; min-width: 200px; }
+.rowt.disc{color:#1d7a46;font-weight:600}
+.coupon{display:flex;gap:8px;align-items:center;margin-bottom:10px}.coupon .in{flex:1;text-transform:uppercase}
+.lowst{color:#c2410c}
+.vgrp{border:0;padding:0;margin:14px 0 0}.vgrp legend{font-weight:700;font-size:.9rem;margin-bottom:6px;padding:0}
+.vopts{display:flex;flex-wrap:wrap;gap:8px}
+.vopts label{cursor:pointer}.vopts input{position:absolute;opacity:0;pointer-events:none}
+.vopts span{display:inline-block;min-width:44px;text-align:center;padding:8px 14px;border:1.5px solid #cfd5df;border-radius:10px;background:#fff;font-weight:600;font-size:.9rem}
+.vopts input:checked+span{border-color:var(--cobalt,#2347F5);background:var(--cobalt,#2347F5);color:var(--on-brand,#fff)}
+.vopts input:focus-visible+span{outline:3px solid #8ab4ff;outline-offset:2px}
+.line-v{font-size:.82rem;color:#5b6677;margin:2px 0}
+/* Producto agotado: se ve apagado y marcado */
+.card.is-out .card-img img,.pd-img.is-out>img{filter:grayscale(1);opacity:.55}
+.card.is-out .card-img{background:#e8eaee}
+.card.is-out .card-t,.card.is-out .card-meta,.card.is-out .price strong{color:#8a93a1}
+.card.is-out .price s{display:none}
+.card.is-out .btn{background:#d5d9e0;color:#6b7482;border-color:#d5d9e0;cursor:not-allowed}
+.card.is-out .tag{display:none}
+.card .out{background:rgba(60,66,78,.88);letter-spacing:.02em}
+.sugg .sg-t small{color:#a15c00}

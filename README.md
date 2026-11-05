@@ -113,3 +113,22 @@ Los productos de ejemplo tienen marcas y precios ficticios: reemplazalos por los
 - Las categorías se crean, renombran y borran desde el panel. Al borrar una con productos, el panel pregunta a cuál moverlos.
 - **Cliente nuevo:** copiá `docs/negocio.config.EN-BLANCO.js` encima de `docs/negocio.config.js` (arranca sin productos, banners ni categorías de ejemplo, `sampleData:false`), completá nombre, color, WhatsApp, y poné su `firebase-config.js`.
 - La tienda de ejemplo sigue disponible con `sampleData: true`.
+
+## Funciones de venta (todas configurables en Ajustes)
+
+- **Cupones**: `CÓDIGO | 10%` o `CÓDIGO | 200`. Se verifican de nuevo en el servidor (Cloud Function). Son públicos en los datos de la tienda: sirven para promociones.
+- **Envío gratis desde un monto** y aviso al cliente de cuánto le falta.
+- **Medios de pago por tipo de entrega** (retiro o domicilio) y casilla para mostrar u ocultar el costo junto a cada localidad.
+- **Recordar datos del cliente** en su dispositivo, y aviso de "quedan N" en el carrito.
+
+## Entregar la tienda a un cliente (guía rápida)
+
+1. Copiá el proyecto. Copiá `docs/negocio.config.EN-BLANCO.js` sobre `docs/negocio.config.js` y completalo (nombre, color, logo, WhatsApp, dirección, horarios).
+2. Creá un proyecto de Firebase para el cliente y pegá su config en `docs/firebase-config.js`. Activá Firestore y Authentication (correo/contraseña), creá el usuario `user@tienda-admin.local`.
+3. Publicá `firestore.rules`. Si querés el aviso por WhatsApp automático y stock automático, desplegá `functions/` (plan Blaze).
+4. `node scripts/build.js`, subí `docs/` a GitHub Pages o Firebase Hosting y agregá el dominio en Authentication.
+5. Entrá a `#/admin`, cambiá la contraseña, creá categorías y productos, ajustá envíos, pagos y textos de páginas (Servicios, Condiciones, Privacidad).
+
+## Variantes (talle, color, etc.)
+
+En el panel, al crear o editar un producto, el campo **Variantes** acepta una línea por grupo (`Talle: S, M, L` / `Color: Negro, Blanco`, hasta 3 grupos). El cliente elige una opción de cada grupo antes de agregar al carrito; cada combinación es una línea del carrito y del pedido. El stock es el total del producto y se reparte entre sus variantes.

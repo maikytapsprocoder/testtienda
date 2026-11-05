@@ -13,7 +13,7 @@ service cloud.firestore {
     // Un pedido nuevo solo puede crearse con esta forma y tamaños (evita basura y abuso).
     function validOrder() {
       let d = request.resource.data;
-      return d.keys().hasOnly(['customer', 'items', 'itemCount', 'shipping', 'total', 'code', 'status', 'createdAt'])
+      return d.keys().hasOnly(['customer', 'items', 'itemCount', 'shipping', 'discount', 'coupon', 'total', 'code', 'status', 'createdAt'])
         && d.keys().hasAll(['customer', 'items', 'total', 'code', 'status', 'createdAt'])
         && d.status == 'nuevo'
         && d.createdAt == request.time
@@ -24,6 +24,8 @@ service cloud.firestore {
         && d.customer.delivery in ['retiro', 'envio']
         && (!('address' in d.customer) || (d.customer.address is string && d.customer.address.size() <= 200))
         && (!('zone' in d.customer) || (d.customer.zone is string && d.customer.zone.size() <= 80))
+        && (!('discount' in d) || (d.discount is number && d.discount >= 0 && d.discount <= 10000000))
+        && (!('coupon' in d) || (d.coupon is string && d.coupon.size() <= 30))
         && (!('shipping' in d) || (d.shipping is number && d.shipping >= 0 && d.shipping <= 100000))
         && (!('itemCount' in d) || (d.itemCount is number && d.itemCount <= 200))
         && (!('payment' in d.customer) || (d.customer.payment is string && d.customer.payment.size() <= 60))

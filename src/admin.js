@@ -41,9 +41,10 @@ async function applyPendingStock() {
   try {
     for (const o of pend) {
       await DB.save('orders', o.id, { stockApplied: true }); // se marca primero para no repetir
-      for (const it of o.items || []) {
-        const p = state.products.find(x => x.id === it.id);
-        if (p && p.stock !== null && p.stock !== undefined) await DB.save('products', p.id, { stock: Math.max(0, Number(p.stock) - Number(it.qty || 0)), updatedAt: Date.now() });
+      const tot = {}; for (const it of o.items || []) tot[it.id] = (tot[it.id] || 0) + Number(it.qty || 0); // varias variantes del mismo producto suman
+      for (const [pid, q] of Object.entries(tot)) {
+        const p = state.products.find(x => x.id === pid);
+        if (p && p.stock !== null && p.stock !== undefined) await DB.save('products', p.id, { stock: Math.max(0, Number(p.stock) - q), updatedAt: Date.now() });
       }
     }
   } catch (e) { console.warn('stock', e); } finally { stockBusy = false; }
@@ -161,6 +162,7 @@ function openProductForm(id) {
       <div class="field"><label for="f-o">Precio anterior ($)</label><input class="in" id="f-o" name="oldPrice" type="number" min="0" step="any" inputmode="decimal" value="${p.oldPrice ? esc(p.oldPrice) : ''}"><small>Si es mayor que el precio, se muestra como oferta.</small></div>
       <div class="field full"><label for="f-d">Descripción</label><textarea class="in" id="f-d" name="description" rows="3">${esc(p.description)}</textarea></div>
       <div class="field full"><label for="f-sp">Características</label><textarea class="in" id="f-sp" name="specs" rows="4">${esc(p.specs)}</textarea><small>Una por línea. Ej.: Memoria: 16 GB</small></div>
+      <div class="field full"><label for="f-v">Variantes (opcional, una por línea: Grupo: opción, opción)</label><textarea class="in" id="f-v" name="variants" rows="3" placeholder="Talle: S, M, L, XL&#10;Color: Negro, Blanco">${esc(prodVariants(p).map(g => g.name + ': ' + g.options.join(', ')).join('\n'))}</textarea><small>El cliente tiene que elegir una opción de cada grupo antes de agregar al carrito. El stock es el total del producto (se reparte entre las variantes).</small></div>
     </div>
     ${galleryField(p.images && p.images.length ? p.images : (p.image ? [p.image] : []), p.art, catById(p.category).acc)}${artSelect(p.art)}
     <label class="chk"><input type="checkbox" name="active" ${p.active !== false ? 'checked' : ''}> Visible en la tienda</label>
@@ -245,7 +247,7 @@ function openOrder(id) {
   const c = o.customer || {};
   const msg = `Hola ${c.name || ''}, te escribimos de ${state.settings.storeName} por tu pedido ${o.code || ''}.`;
   openForm('Pedido ' + (o.code || ''), `<p class="muted">${fmtDate(o.createdAt)} · ${waChip(o)}</p>
-    <table class="ord-items"><tbody>${(o.items || []).map(i => `<tr><td>${esc(i.qty)} × ${esc(i.name)}</td><td>${money(i.price * i.qty)}</td></tr>`).join('')}${o.shipping ? `<tr><td>Envío${c.zone ? ' (' + esc(c.zone) + ')' : ''}</td><td>${money(o.shipping)}</td></tr>` : ''}<tr><td><b>Total</b></td><td style="font-size:18px">${money(o.total)}</td></tr></tbody></table>
+    <table class="ord-items"><tbody>${(o.items || []).map(i => `<tr><td>${esc(i.qty)} × ${esc(i.name)}</td><td>${money(i.price * i.qty)}</td></tr>`).join('')}${o.discount ? `<tr><td>Descuento${o.coupon ? ' (' + esc(o.coupon) + ')' : ''}</td><td>− ${money(o.discount)}</td></tr>` : ''}${o.shipping ? `<tr><td>Envío${c.zone ? ' (' + esc(c.zone) + ')' : ''}</td><td>${money(o.shipping)}</td></tr>` : ''}<tr><td><b>Total</b></td><td style="font-size:18px">${money(o.total)}</td></tr></tbody></table>
     ${o.priceMismatch ? `<p class="err">Atención: los precios del pedido no coinciden con los actuales. Total verificado: ${money(o.verifiedTotal)}.</p>` : ''}
     <p><b>${esc(c.name)}</b><br>${esc(c.phone)}<br>${c.payment ? 'Pago: ' + esc(c.payment) + '<br>' : ''}${c.delivery === 'envio' ? 'Envío a: ' + esc(c.address) + (c.zone ? ' (' + esc(c.zone) + ')' : '') : 'Retiro en el local'}</p>
     ${c.note ? `<p class="muted" style="margin-top:8px">“${esc(c.note)}”</p>` : ''}
@@ -259,7 +261,11 @@ function settingsTab() {
     <div class="field"><label for="s-n">Nombre de la tienda</label><input class="in" id="s-n" name="storeName" required value="${esc(s.storeName)}"></div>
     <div class="field"><label for="s-t">Frase corta</label><input class="in" id="s-t" name="tagline" value="${esc(s.tagline)}"></div>
     <div class="field"><label for="s-p">Barra de beneficios (una por línea, máximo 3)</label><textarea class="in" id="s-p" name="perks" rows="3">${esc(perks)}</textarea></div>
-    <div class="field"><label for="s-pm">Medios de pago que aceptás (uno por línea)</label><textarea class="in" id="s-pm" name="payMethods" rows="4">${esc((s.payMethods || []).join('\n'))}</textarea><small>El cliente elige uno al confirmar el pedido. Si lo dejás vacío, no se pregunta.</small></div>
+    <div class="field"><label for="s-pm">Medios de pago para todos (uno por línea)</label><textarea class="in" id="s-pm" name="payMethods" rows="4">${esc((s.payMethods || []).join('\n'))}</textarea><small>El cliente elige uno al confirmar el pedido. Si lo dejás vacío, no se pregunta.</small></div>
+    <div class="field"><label for="s-pp">Solo si retira en el local</label><textarea class="in" id="s-pp" name="payPickup" rows="2">${esc((s.payPickup || []).join('\n'))}</textarea><small>Ej.: Tarjeta en el local.</small></div>
+    <div class="field"><label for="s-pd">Solo si pide envío a domicilio</label><textarea class="in" id="s-pd" name="payDelivery" rows="2">${esc((s.payDelivery || []).join('\n'))}</textarea><small>Ej.: Tarjeta en domicilio (POS).</small></div>
+    <label class="chk" style="margin:6px 0 14px"><input type="checkbox" name="showShipping" ${s.showShipping === false ? '' : 'checked'}> Mostrar costo de envío junto a cada localidad</label>
+    <small class="muted" style="display:block;margin:-8px 0 14px">Si lo desactivás, la lista solo muestra la localidad y el costo aparece abajo, en el total.</small>
     <h3 style="margin-top:22px">Marca y redes</h3>
     <div class="form-grid"><div class="field"><label for="s-bc">Color principal</label><input class="in" id="s-bc" name="brandColor" type="color" value="${esc(/^#[0-9a-f]{6}$/i.test(s.brandColor || '') ? s.brandColor : '#2347F5')}" style="padding:4px"></div>
     <div class="field"><label for="s-lg">Logo (enlace o subir imagen)</label><input class="in" id="s-lg" name="logo" placeholder="https://…" value="${s.logo && !s.logo.startsWith('data:') ? esc(s.logo) : ''}" data-keep="${s.logo && s.logo.startsWith('data:') ? esc(s.logo) : ''}"><label class="btn btn-line btn-sm" style="margin-top:6px">Subir logo<input type="file" accept="image/*" class="sr" data-act="admLogoFile"></label>${s.logo ? '<img src="' + esc(s.logo) + '" alt="Logo actual" style="height:40px;margin-top:8px">' : ''}<small>Vacío = se muestra el nombre del negocio.</small></div></div>
@@ -274,6 +280,8 @@ function settingsTab() {
     <div class="field"><label for="s-f">Texto extra en el pie de página (opcional)</label><textarea class="in" id="s-f" name="footerInfo" rows="2">${esc(s.footerInfo)}</textarea></div>
     <h3 style="margin-top:22px">Envíos y límites</h3>
     <div class="field"><label for="s-z">Localidades y costo de envío (una por línea: Localidad | costo)</label><textarea class="in" id="s-z" name="zones" rows="8">${esc((s.shippingZones || []).map(z => z.name + ' | ' + (Number(z.cost) || 0)).join('\n'))}</textarea><small>Costo 0 = sin costo. Los costos por distancia son estimados: ajustalos a tu realidad. Las localidades que no figuren se coordinan por WhatsApp.</small></div>
+    <div class="field"><label for="s-fs">Envío gratis desde (monto, 0 = no usar)</label><input class="in" id="s-fs" name="freeShippingFrom" type="number" min="0" step="1" value="${esc(s.freeShippingFrom || 0)}"><small>Si el pedido (con descuentos) llega a ese monto, el envío es gratis en las localidades con costo.</small></div>
+    <div class="field"><label for="s-cp">Cupones de descuento (uno por línea: CÓDIGO | 10% o CÓDIGO | 200)</label><textarea class="in" id="s-cp" name="coupons" rows="3" placeholder="BIENVENIDO | 10%">${esc((s.coupons || []).map(c => c.code + ' | ' + (c.type === 'pct' ? c.value + '%' : c.value)).join('\n'))}</textarea><small>"10%" descuenta un porcentaje; un número solo descuenta ese monto fijo. Los códigos no se pueden ocultar del todo (quedan en los datos públicos de la tienda): usalos para promociones, no para secretos.</small></div>
     <div class="form-grid"><div class="field"><label for="s-mu">Máximo de unidades por pedido</label><input class="in" id="s-mu" name="maxUnits" type="number" min="1" step="1" value="${esc(s.maxUnits ?? 30)}"></div>
     <div class="field"><label for="s-mp">Máximo de unidades del mismo producto</label><input class="in" id="s-mp" name="maxPerProduct" type="number" min="1" step="1" value="${esc(s.maxPerProduct ?? 10)}"></div></div>
     <h3 style="margin-top:22px">Textos de páginas</h3>
@@ -397,7 +405,7 @@ async function adminSubmit(form) {
     if (stock !== null && (Number.isNaN(stock) || stock < 0)) return formErr(form, 'El stock no es válido.');
     let images = []; try { images = JSON.parse(f.get('images') || '[]').filter(x => typeof x === 'string' && x).slice(0, MAX_IMGS); } catch { /* vacío */ }
     if (images.join('').length > 850000) return formErr(form, 'Las fotos pesan demasiado en total (límite de Firestore ~1 MB). Quitá alguna o usá enlaces.');
-    const data = { name: s('name'), category: s('category'), sub: s('sub'), brand: s('brand'), price, oldPrice: old, stock, description: s('description'), specs: String(f.get('specs') || '').trim(), images, image: images[0] || '', art: s('art'), active: f.get('active') === 'on', updatedAt: Date.now() };
+    const data = { name: s('name'), category: s('category'), sub: s('sub'), brand: s('brand'), price, oldPrice: old, stock, description: s('description'), specs: String(f.get('specs') || '').trim(), variants: String(f.get('variants') || '').split('\n').map(l => { const [n, o] = l.split(':'); return { name: (n || '').trim(), options: [...new Set(String(o || '').split(',').map(x => x.trim()).filter(Boolean))].slice(0, 20) }; }).filter(g => g.name && g.options.length).slice(0, 3), images, image: images[0] || '', art: s('art'), active: f.get('active') === 'on', updatedAt: Date.now() };
     if (!id) data.createdAt = Date.now();
     return guarded(async () => { await DB.save('products', id, data); $('#dlgForm').close(); toast('Producto guardado'); }, form);
   }
@@ -427,11 +435,13 @@ async function adminSubmit(form) {
     if (!s('storeName')) return formErr(form, 'Escribí el nombre de la tienda.');
     const linkFallback = f.get('linkFallback') === 'on';
     if (linkFallback && digits(s('waNumber')).length < 8) return formErr(form, 'Para activar el respaldo, escribí un número de WhatsApp válido.');
-    const data = { storeName: s('storeName'), tagline: s('tagline'), perks: String(f.get('perks') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 3), footerInfo: String(f.get('footerInfo') || '').trim(), payMethods: String(f.get('payMethods') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 8), linkFallback, waNumber: digits(s('waNumber')),
+    const data = { storeName: s('storeName'), tagline: s('tagline'), perks: String(f.get('perks') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 3), footerInfo: String(f.get('footerInfo') || '').trim(), payMethods: String(f.get('payMethods') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 8), payPickup: String(f.get('payPickup') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 4), payDelivery: String(f.get('payDelivery') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 4), showShipping: f.get('showShipping') === 'on', linkFallback, waNumber: digits(s('waNumber')),
       brandColor: /^#[0-9a-f]{6}$/i.test(s('brandColor')) ? s('brandColor') : '#2347F5', logo: s('logo') || form.logo.dataset.keep || '', instagram: s('instagram'), facebook: s('facebook'),
       branches: String(f.get('branches') || '').split('\n').map(l => { const [n, a, im, lk] = l.split('|').map(x => (x || '').trim()); return { name: n, address: a, image: im, link: lk }; }).filter(b => b.name).slice(0, 6),
       contactWhatsapp: digits(s('contactWhatsapp')), contactEmail: s('contactEmail'), address: s('address'), hours: String(f.get('hours') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 7),
       shippingZones: String(f.get('zones') || '').split('\n').map(l => { const [n, c] = l.split('|'); return { name: (n || '').trim(), cost: Math.max(0, Math.round(num(c) || 0)) }; }).filter(z => z.name).slice(0, 60),
+      freeShippingFrom: Math.max(0, Math.round(num(f.get('freeShippingFrom')) || 0)),
+      coupons: String(f.get('coupons') || '').split('\n').map(l => { const [c, v] = l.split('|').map(x => (x || '').trim()); const pct = /%$/.test(v || ''); const n = num((v || '').replace('%', '')); return { code: (c || '').toUpperCase().replace(/\s+/g, ''), type: pct ? 'pct' : 'fix', value: pct ? Math.min(100, n) : n }; }).filter(c => c.code && c.value > 0).slice(0, 20),
       maxUnits: Math.max(1, Math.floor(num(f.get('maxUnits')) || 30)), maxPerProduct: Math.max(1, Math.floor(num(f.get('maxPerProduct')) || 10)),
       pageServices: String(f.get('pageServices') || '').trim(), pageTerms: String(f.get('pageTerms') || '').trim(), pagePrivacy: String(f.get('pagePrivacy') || '').trim() };
     return guarded(async () => { await DB.save('settings', 'store', data); toast('Ajustes guardados'); }, form);

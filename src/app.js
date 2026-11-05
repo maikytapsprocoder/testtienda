@@ -122,14 +122,33 @@ function shippingFor(c) {
   return { cost, label: cost > 0 ? money(cost) : 'Sin costo', known: true };
 }
 
+/* Cupones y envío gratis (misma lógica que usa la Cloud Function para verificar) */
+const couponList = () => (Array.isArray(S().coupons) ? S().coupons : []).filter(c => c && c.code);
+const findCoupon = code => { const k = String(code || '').trim().toUpperCase(); return k ? couponList().find(c => String(c.code).toUpperCase() === k) : null; };
+function pricing(c) {
+  const items = cartTotal(), cp = findCoupon(state.coupon);
+  const discount = cp ? Math.min(items, cp.type === 'pct' ? Math.round(items * Number(cp.value) / 100) : Number(cp.value) || 0) : 0, base = items - discount;
+  let sh = shippingFor({ delivery: c.delivery, zone: c.zone || zones()[0]?.name });
+  const free = Number(S().freeShippingFrom) || 0;
+  if (c.delivery === 'envio' && sh.known && free > 0 && base >= free && sh.cost > 0) sh = { cost: 0, label: 'Gratis', known: true };
+  const left = c.delivery === 'envio' && sh.known && free > 0 && base < free ? free - base : 0;
+  return { items, discount, coupon: cp ? cp.code : '', sh, total: base + sh.cost, left };
+}
+
 /* ───────── Carrito ───────── */
+/* Una línea del carrito = producto + variante elegida. Clave: "idProducto" o "idProducto::Talle: M · Color: Negro" */
+const lineKey = (id, label) => label ? id + '::' + label : id;
+const splitKey = k => { const i = String(k).indexOf('::'); return i < 0 ? [String(k), ''] : [k.slice(0, i), k.slice(i + 2)]; };
 function cartLines() {
-  const out = [];
-  for (const [id, q] of Object.entries(state.cart)) {
-    const p = activeProducts().find(x => x.id === id);
+  const out = [], used = {};
+  for (const [key, q] of Object.entries(state.cart)) {
+    const [pid, label] = splitKey(key);
+    const p = activeProducts().find(x => x.id === pid);
     if (!p) continue;
-    const qty = Math.min(Number(q) || 0, stockOf(p), maxPer());
-    if (qty > 0) out.push({ p, qty, sub: p.price * qty });
+    // el stock y el tope por producto se reparten entre todas sus variantes
+    const room = Math.max(0, Math.min(stockOf(p), maxPer()) - (used[pid] || 0));
+    const qty = Math.min(Number(q) || 0, room);
+    if (qty > 0) { used[pid] = (used[pid] || 0) + qty; out.push({ key, p, qty, label, sub: p.price * qty }); }
   }
   return out;
 }
@@ -137,27 +156,31 @@ const cartCount = () => cartLines().reduce((a, l) => a + l.qty, 0);
 const cartTotal = () => cartLines().reduce((a, l) => a + l.sub, 0);
 
 /* Cambia la cantidad respetando stock, tope por producto y tope de unidades por pedido. Devuelve el motivo si recortó. */
-function setQty(id, qty) {
-  const p = activeProducts().find(x => x.id === id);
+function setQty(key, qty) {
+  const [pid] = splitKey(key);
+  const p = activeProducts().find(x => x.id === pid);
   if (!p) return '';
   let reason = '';
   qty = Math.max(0, qty);
-  if (qty > stockOf(p)) { qty = stockOf(p); reason = 'stock'; toast(`Solo quedan ${stockOf(p)} unidades de este producto.`, { bad: true }); }
-  if (qty > maxPer()) { qty = maxPer(); reason = 'per'; toast(`Podés llevar hasta ${maxPer()} unidades de cada producto por pedido. Si necesitás más, escribinos por WhatsApp.`, { bad: true }); }
-  const others = cartLines().filter(l => l.p.id !== id).reduce((a, l) => a + l.qty, 0);
+  const sib = cartLines().filter(l => l.p.id === pid && l.key !== key).reduce((a, l) => a + l.qty, 0); // otras variantes del mismo producto
+  if (qty > stockOf(p) - sib) { qty = Math.max(0, stockOf(p) - sib); reason = 'stock'; toast(`Solo quedan ${stockOf(p)} unidades de este producto.`, { bad: true }); }
+  if (qty > maxPer() - sib) { qty = Math.max(0, maxPer() - sib); reason = 'per'; toast(`Podés llevar hasta ${maxPer()} unidades de cada producto por pedido. Si necesitás más, escribinos por WhatsApp.`, { bad: true }); }
+  const others = cartLines().filter(l => l.key !== key).reduce((a, l) => a + l.qty, 0);
   if (qty > Math.max(0, maxUnits() - others)) { qty = Math.max(0, maxUnits() - others); reason = 'units'; toast(`Cada pedido admite hasta ${maxUnits()} unidades en total. Para cantidades mayores, escribinos por WhatsApp.`, { bad: true }); }
-  if (qty === 0) delete state.cart[id]; else state.cart[id] = qty;
+  if (qty === 0) delete state.cart[key]; else state.cart[key] = qty;
   saveCart(); renderCartBadge(); if ($('#dlgCart').open) renderCart();
   return reason;
 }
-function addToCart(id, n = 1) {
-  const p = activeProducts().find(x => x.id === id);
+function addToCart(key, n = 1) {
+  const [pid] = splitKey(key);
+  const p = activeProducts().find(x => x.id === pid);
   if (!p) return;
   if (stockOf(p) <= 0) return toast('Este producto no tiene stock.', { bad: true });
-  if (setQty(id, (state.cart[id] || 0) + n)) return;
+  if (setQty(key, (state.cart[key] || 0) + n)) return;
   const b = $('#cartBtn'); b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump');
   toast('Agregado al carrito', { label: 'Ver carrito', fn: openCart });
 }
+const prodVariants = p => (Array.isArray(p.variants) ? p.variants : []).filter(g => g && g.name && Array.isArray(g.options) && g.options.length);
 function renderCartBadge() {
   $('#cartN').textContent = $('#cartFabN').textContent = cartCount();
   $('#cartT').textContent = money(cartTotal());
@@ -218,14 +241,14 @@ function card(p) {
       <p class="card-meta">${esc(p.brand || c.name)}</p>
       <h3 class="card-t"><button type="button" class="linkish" data-act="open" data-id="${esc(p.id)}">${esc(p.name)}</button></h3>
       <div class="price">${offer ? `<s>${money(p.oldPrice)}</s>` : ''}<strong>${money(p.price)}</strong></div>
-      <button type="button" class="btn btn-primary" data-act="add" data-id="${esc(p.id)}" ${out ? 'disabled' : ''}>${out ? 'Sin stock' : 'Agregar al carrito'}</button>
+      <button type="button" class="btn btn-primary" data-act="add" data-id="${esc(p.id)}" ${out ? 'disabled' : ''}>${out ? 'Sin stock' : prodVariants(p).length ? 'Elegir opciones' : 'Agregar al carrito'}</button>
     </div>
   </article>`;
 }
 const skeletons = n => `<div class="grid">${'<div class="skel"></div>'.repeat(n)}</div>`;
 
 function sortList(list, keepRelevance) {
-  if (keepRelevance && state.sort === 'rel') return [...list];
+  if (keepRelevance && state.sort === 'rel') return [...list].sort((a, b) => (stockOf(a) <= 0) - (stockOf(b) <= 0));
   const s = state.sort, byNew = (a, b) => (b.createdAt || 0) - (a.createdAt || 0);
   const l = [...list];
   if (s === 'asc') l.sort((a, b) => a.price - b.price);
@@ -233,7 +256,7 @@ function sortList(list, keepRelevance) {
   else if (s === 'disc') l.sort((a, b) => (onOffer(b) ? pct(b) : 0) - (onOffer(a) ? pct(a) : 0));
   else if (s === 'az') l.sort((a, b) => a.name.localeCompare(b.name, 'es'));
   else l.sort(byNew);
-  return l;
+  return l.sort((a, b) => (stockOf(a) <= 0) - (stockOf(b) <= 0)); // los agotados van al final
 }
 
 function heroHTML() {
@@ -390,7 +413,7 @@ function showSugg() {
   if (!q || state.route.name === 'admin') return hideSugg();
   const res = searchProducts(q, activeProducts()).slice(0, 6);
   if (!res.length) { u.innerHTML = `<li class="sugg-none">No encontramos “${esc(q)}”. Probá con otra palabra.</li>`; u.hidden = false; return; }
-  u.innerHTML = res.map(p => `<li><button type="button" data-act="sugg" data-id="${esc(p.id)}"><img src="${esc(imgOf(p))}" alt=""><span class="sg-t">${esc(p.name)}</span><span class="sg-p">${money(p.price)}</span></button></li>`).join('');
+  u.innerHTML = res.map(p => `<li><button type="button" data-act="sugg" data-id="${esc(p.id)}"><img src="${esc(imgOf(p))}" alt=""><span class="sg-t">${esc(p.name)}</span><span class="sg-p">${stockOf(p) <= 0 ? "Sin stock" : money(p.price)}</span></button></li>`).join('');
   u.hidden = false;
 }
 
@@ -453,15 +476,16 @@ function openProduct(id) {
   if (!p) return;
   pdQty = 1;
   const c = catOf(p), st = stockOf(p), offer = onOffer(p), imgs = productImages(p);
-  const stock = st <= 0 ? '<p class="stock none">Sin stock</p>' : st <= 5 ? `<p class="stock low">Quedan ${st} unidades</p>` : '<p class="stock">Disponible</p>';
+  const stock = st <= 0 ? `<p class="stock none">Sin stock por el momento</p>${contactNum() ? `<p><a class="btn btn-line btn-sm" target="_blank" rel="noopener" href="${waLink('Hola, quiero consultar cuándo vuelve a haber stock de: ' + p.name)}">Consultar disponibilidad por WhatsApp</a></p>` : ''}` : st <= 5 ? `<p class="stock low">Quedan ${st} unidades</p>` : '<p class="stock">Disponible</p>';
   const specs = String(p.specs || '').split('\n').map(s => s.trim()).filter(Boolean);
   $('#dlgProduct').innerHTML = `<button type="button" class="dlg-x" data-act="closeDlg" aria-label="Cerrar">×</button>
-    <div class="pd"><div class="pd-img" style="--tint:${c.tint}"><img id="pdMain" src="${esc(imgs[0])}" alt="${esc(p.name)}">${offer ? `<span class="tag">-${pct(p)}%</span>` : ''}
+    <div class="pd"><div class="pd-img ${st <= 0 ? 'is-out' : ''}" style="--tint:${c.tint}"><img id="pdMain" src="${esc(imgs[0])}" alt="${esc(p.name)}">${offer ? `<span class="tag">-${pct(p)}%</span>` : ''}
       ${imgs.length > 1 ? `<div class="thumbs" role="group" aria-label="Fotos del producto">${imgs.map((u, i) => `<button type="button" data-act="gal" data-id="${esc(p.id)}" data-i="${i}" aria-label="Ver foto ${i + 1}" aria-current="${i === 0}"><img src="${esc(u)}" alt=""></button>`).join('')}</div>` : ''}</div>
     <div class="pd-b"><p class="card-meta">${esc([p.brand, p.sub].filter(Boolean).join(' · ') || c.name)}</p><h2>${esc(p.name)}</h2>
       <div class="pd-price"><strong>${money(p.price)}</strong>${offer ? `<s>${money(p.oldPrice)}</s>` : ''}</div>${stock}
       ${p.description ? `<p class="muted">${esc(p.description)}</p>` : ''}
       ${specs.length ? `<ul class="specs">${specs.map(s => `<li>${esc(s)}</li>`).join('')}</ul>` : ''}
+      ${prodVariants(p).map((g, gi) => `<fieldset class="vgrp" data-g="${esc(g.name)}"><legend>${esc(g.name)}</legend><div class="vopts">${g.options.map(o => `<label><input type="radio" name="v${gi}" value="${esc(o)}"><span>${esc(o)}</span></label>`).join('')}</div></fieldset>`).join('')}
       <div class="buy"><div class="qty" role="group" aria-label="Cantidad"><button type="button" data-act="pdMinus" aria-label="Menos">−</button><output id="pdQ" aria-live="polite">1</output><button type="button" data-act="pdPlus" aria-label="Más">+</button></div>
       <button type="button" class="btn btn-primary" data-act="pdAdd" data-id="${esc(p.id)}" ${st <= 0 ? 'disabled' : ''}>Agregar al carrito</button></div>
       <button type="button" class="btn btn-line btn-sm share" data-act="share" data-id="${esc(p.id)}">Compartir este producto</button></div></div>`;
@@ -498,16 +522,17 @@ function renderCart() {
     return;
   }
   if (state.cartStep === 'checkout') {
-    const v = state.form || {};
+    const v = state.form || {}; state.payFor = v.delivery === 'envio' ? 'envio' : 'retiro';
     d.innerHTML = head('', true) + `<form id="checkoutForm" class="dr-body" style="padding-top:18px" novalidate>
       <h2 style="font:800 22px var(--font-d);margin-bottom:14px">Tus datos</h2>
       <div class="field"><label for="f-name">Nombre y apellido</label><input class="in" id="f-name" name="name" autocomplete="name" required value="${esc(v.name)}"></div>
       <div class="field"><label for="f-phone">Teléfono o WhatsApp</label><input class="in" id="f-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" required value="${esc(v.phone)}"><small>Te contactamos a este número para confirmar el pedido.</small></div>
       <div class="field"><span>¿Cómo lo recibís?</span><div class="radios"><label><input type="radio" name="delivery" value="retiro" ${v.delivery !== 'envio' ? 'checked' : ''}> Retiro en el local</label><label><input type="radio" name="delivery" value="envio" ${v.delivery === 'envio' ? 'checked' : ''}> Envío a domicilio</label></div></div>
-      ${payList().length ? `<div class="field"><span>¿Cómo querés pagar?</span><div class="radios" role="radiogroup">${payList().map(m => `<label><input type="radio" name="payment" value="${esc(m)}" ${v.payment === m ? 'checked' : ''}> ${esc(m)}</label>`).join('')}</div></div>` : ''}
-      <div class="field" id="zoneField" ${v.delivery === 'envio' ? '' : 'hidden'}><label for="f-zone">Localidad</label><select class="in" id="f-zone" name="zone">${zones().map(z => `<option value="${esc(z.name)}" ${(v.zone || zones()[0]?.name) === z.name ? 'selected' : ''}>${esc(z.name)} — ${Number(z.cost) > 0 ? money(z.cost) : 'sin costo de envío'}</option>`).join('')}<option value="${OTRA}" ${v.zone === OTRA ? 'selected' : ''}>Otra localidad (costo a coordinar)</option></select></div>
+      <div class="field" id="payBox">${payHTML(v.delivery === 'envio' ? 'envio' : 'retiro', v.payment)}</div>
+      <div class="field" id="zoneField" ${v.delivery === 'envio' ? '' : 'hidden'}><label for="f-zone">Localidad</label><select class="in" id="f-zone" name="zone">${zones().map(z => `<option value="${esc(z.name)}" ${(v.zone || zones()[0]?.name) === z.name ? 'selected' : ''}>${esc(z.name)}${S().showShipping === false ? '' : ' — ' + (Number(z.cost) > 0 ? money(z.cost) : 'sin costo de envío')}</option>`).join('')}<option value="${OTRA}" ${v.zone === OTRA ? 'selected' : ''}>Otra localidad (costo a coordinar)</option></select></div>
       <div class="field" id="addrField" ${v.delivery === 'envio' ? '' : 'hidden'}><label for="f-addr">Dirección de entrega</label><input class="in" id="f-addr" name="address" autocomplete="street-address" value="${esc(v.address)}"></div>
       <div class="hp" aria-hidden="true"><label>No completar este campo<input name="website" tabindex="-1" autocomplete="off"></label></div>
+      <label class="chk" style="margin:0 0 12px"><input type="checkbox" name="remember" ${v.remember === false ? '' : 'checked'}> Recordar mis datos en este dispositivo</label>
       <div class="field"><label for="f-note">Comentarios (opcional)</label><textarea class="in" id="f-note" name="note" rows="2">${esc(v.note)}</textarea></div>
       <p class="err" id="orderErr" role="alert" ${state.orderErr ? '' : 'hidden'}>${esc(state.orderErr)}</p>
     </form>
@@ -516,64 +541,71 @@ function renderCart() {
     <p class="note">Te confirmamos el pedido por WhatsApp y coordinamos el pago y la entrega.</p></div>`;
     return;
   }
-  d.innerHTML = head(`Tu carrito (${cartCount()})`) + `<div class="dr-body">${lines.map(({ p, qty, sub }) => `<div class="line">
+  d.innerHTML = head(`Tu carrito (${cartCount()})`) + `<div class="dr-body">${lines.map(({ key, p, qty, sub, label }) => `<div class="line">
       <img src="${esc(imgOf(p))}" alt="" style="--tint:${catOf(p).tint}">
-      <div><p class="line-t">${esc(p.name)}</p><p class="line-u">${money(p.price)} c/u</p>
-      <div class="line-r"><div class="qty sm" role="group" aria-label="Cantidad de ${esc(p.name)}"><button type="button" data-act="lineMinus" data-id="${esc(p.id)}" aria-label="Menos">−</button><output>${qty}</output><button type="button" data-act="linePlus" data-id="${esc(p.id)}" aria-label="Más">+</button></div><span class="line-sub">${money(sub)}</span></div>
-      <button type="button" class="rm" data-act="lineRm" data-id="${esc(p.id)}">Quitar</button></div></div>`).join('')}</div>
-    <div class="dr-f"><div class="total"><span>Total</span><strong>${money(total)}</strong></div>
+      <div><p class="line-t">${esc(p.name)}</p>${label ? `<p class="line-v">${esc(label)}</p>` : ''}<p class="line-u">${money(p.price)} c/u${Number.isFinite(stockOf(p)) && stockOf(p) <= 5 ? ` · <b class="lowst">Quedan ${stockOf(p)}</b>` : ''}</p>
+      <div class="line-r"><div class="qty sm" role="group" aria-label="Cantidad de ${esc(p.name)}"><button type="button" data-act="lineMinus" data-id="${esc(key)}" aria-label="Menos">−</button><output>${qty}</output><button type="button" data-act="linePlus" data-id="${esc(key)}" aria-label="Más">+</button></div><span class="line-sub">${money(sub)}</span></div>
+      <button type="button" class="rm" data-act="lineRm" data-id="${esc(key)}">Quitar</button></div></div>`).join('')}</div>
+    <div class="dr-f">${couponList().length ? `<form class="coupon" id="couponForm">${state.coupon && findCoupon(state.coupon) ? `<span class="chipst ok">Cupón ${esc(findCoupon(state.coupon).code)} aplicado</span><button type="button" class="rm" data-act="rmCoupon">Quitar</button>` : `<input class="in" id="cpIn" placeholder="Código de descuento" autocomplete="off" aria-label="Código de descuento"><button type="submit" class="btn btn-line btn-sm">Aplicar</button>`}</form><p class="err" id="cpErr" role="alert" hidden></p>` : ''}
+    ${(() => { const p = pricing({ delivery: 'retiro' }); return p.discount ? `<div class="rowt"><span>Productos</span><span>${money(p.items)}</span></div><div class="rowt disc"><span>Descuento (${esc(p.coupon)})</span><span>− ${money(p.discount)}</span></div>` : ''; })()}<div class="total"><span>Total</span><strong>${money(pricing({ delivery: 'retiro' }).total)}</strong></div>${Number(S().freeShippingFrom) > 0 ? `<p class="note">Envío gratis en compras desde ${money(S().freeShippingFrom)}.</p>` : ''}
     <button type="button" class="btn btn-primary" data-act="checkout">Finalizar compra</button>
     <button type="button" class="rm" data-act="clearCart">Vaciar carrito</button></div>`;
 }
 
 function ckTotals(c) {
-  const sh = shippingFor({ delivery: c.delivery, zone: c.zone || zones()[0]?.name }), items = cartTotal();
-  return `<div class="rowt"><span>Productos</span><span>${money(items)}</span></div><div class="rowt"><span>Envío</span><span>${sh.label}</span></div><div class="total"><span>Total a pagar</span><strong>${money(items + sh.cost)}</strong></div>${sh.known ? '' : '<p class="note">El costo de envío a esa localidad lo coordinamos con vos por WhatsApp.</p>'}`;
+  const p = pricing(c);
+  return `<div class="rowt"><span>Productos</span><span>${money(p.items)}</span></div>${p.discount ? `<div class="rowt disc"><span>Descuento (${esc(p.coupon)})</span><span>− ${money(p.discount)}</span></div>` : ''}<div class="rowt"><span>Envío</span><span>${p.sh.label}</span></div><div class="total"><span>Total a pagar</span><strong>${money(p.total)}</strong></div>${p.sh.known ? '' : '<p class="note">El costo de envío a esa localidad lo coordinamos con vos por WhatsApp.</p>'}${p.left > 0 ? `<p class="note">Sumá ${money(p.left)} más y el envío es gratis.</p>` : ''}`;
 }
 function updateCheckout(form) {
   const c = readCheckout(form); state.form = { ...(state.form || {}), ...c };
   $('#addrField').hidden = $('#zoneField').hidden = c.delivery !== 'envio';
   $('#ckTotals').innerHTML = ckTotals(c);
+  if (state.payFor !== c.delivery) { state.payFor = c.delivery; const keep = payList(c.delivery).includes(c.payment) ? c.payment : ''; $('#payBox').innerHTML = payHTML(c.delivery, keep); }
 }
-const payList = () => (state.settings.payMethods || []).map(x => String(x).trim()).filter(Boolean);
+const clean = l => (Array.isArray(l) ? l : []).map(x => String(x).trim()).filter(Boolean);
+/* Medios de pago según cómo recibe el cliente: los comunes + los solo-retiro o solo-envío */
+const payList = delivery => [...new Set([...clean(state.settings.payMethods), ...clean(delivery === 'envio' ? state.settings.payDelivery : state.settings.payPickup)])];
+const payHTML = (delivery, sel) => { const l = payList(delivery); return l.length ? `<span>¿Cómo querés pagar?</span><div class="radios" role="radiogroup">${l.map(m => `<label><input type="radio" name="payment" value="${esc(m)}" ${sel === m ? 'checked' : ''}> ${esc(m)}</label>`).join('')}</div>` : ''; };
 function readCheckout(form) {
   const f = new FormData(form);
-  return { name: String(f.get('name') || '').trim(), phone: String(f.get('phone') || '').trim(), delivery: f.get('delivery') === 'envio' ? 'envio' : 'retiro', address: String(f.get('address') || '').trim(), zone: String(f.get('zone') || ''), hp: String(f.get('website') || ''), payment: String(f.get('payment') || '').trim(), note: String(f.get('note') || '').trim() };
+  return { name: String(f.get('name') || '').trim(), phone: String(f.get('phone') || '').trim(), delivery: f.get('delivery') === 'envio' ? 'envio' : 'retiro', address: String(f.get('address') || '').trim(), zone: String(f.get('zone') || ''), hp: String(f.get('website') || ''), remember: f.get('remember') === 'on', payment: String(f.get('payment') || '').trim(), note: String(f.get('note') || '').trim() };
 }
 function waText(order, code) {
   const l = order.items.map(i => `• ${i.qty} x ${i.name} — ${money(i.price * i.qty)}`).join('\n');
   const c = order.customer;
-  return `Hola, quiero hacer este pedido (${code}):\n${l}\n${order.shipping ? 'Envío: ' + money(order.shipping) + '\n' : ''}Total: ${money(order.total)}\n\nNombre: ${c.name}\nTeléfono: ${c.phone}\n${c.payment ? 'Pago: ' + c.payment + '\n' : ''}${c.delivery === 'envio' ? 'Envío a: ' + c.address + (c.zone ? ' (' + c.zone + ')' : '') : 'Retiro en el local'}${c.note ? '\nComentarios: ' + c.note : ''}`;
+  return `Hola, quiero hacer este pedido (${code}):\n${l}\n${order.shipping ? 'Envío: ' + money(order.shipping) + '\n' : ''}${order.discount ? 'Descuento (' + order.coupon + '): -' + money(order.discount) + '\n' : ''}Total: ${money(order.total)}\n\nNombre: ${c.name}\nTeléfono: ${c.phone}\n${c.payment ? 'Pago: ' + c.payment + '\n' : ''}${c.delivery === 'envio' ? 'Envío a: ' + c.address + (c.zone ? ' (' + c.zone + ')' : '') : 'Retiro en el local'}${c.note ? '\nComentarios: ' + c.note : ''}`;
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function submitOrder(form) {
   if (state.sending) return;
-  const c = readCheckout(form), hp = c.hp; delete c.hp; state.form = { ...c };
+  const c = readCheckout(form), hp = c.hp, remember = c.remember; delete c.hp; delete c.remember; state.form = { ...c, remember };
   const fail = m => { state.orderErr = m; renderCart(); $('#orderErr')?.focus?.(); };
   if (!c.name) return fail('Escribí tu nombre.');
   if (digits(c.phone).length < 7) return fail('Escribí un teléfono válido para poder contactarte.');
   if (c.delivery === 'envio' && !c.address) return fail('Escribí la dirección de entrega.');
-  if (payList().length && !c.payment) return fail('Elegí cómo querés pagar.');
-  if (!payList().length) delete c.payment;
+  if (payList(c.delivery).length && !c.payment) return fail('Elegí cómo querés pagar.');
+  if (!payList(c.delivery).includes(c.payment)) delete c.payment;
   const lines = cartLines();
   if (!lines.length) return fail('Tu carrito está vacío.');
   if (lines.reduce((a, l) => a + l.qty, 0) > maxUnits()) return fail(`Cada pedido admite hasta ${maxUnits()} unidades. Quitá algunas o escribinos por WhatsApp.`);
 
   // Envío: localidad y costo
   if (c.delivery === 'envio') { if (c.zone === OTRA || !zones().some(z => z.name === c.zone)) c.zone = c.zone === OTRA || !zones().length ? 'Otra localidad (a coordinar)' : zones()[0].name; } else delete c.zone;
-  const sh = shippingFor({ delivery: c.delivery, zone: c.zone });
+  const pr = pricing({ delivery: c.delivery, zone: c.zone }), sh = pr.sh;
   const order = {
     customer: c,
-    items: lines.map(({ p, qty }) => ({ id: p.id, name: p.name, price: p.price, qty })),
+    items: lines.map(({ p, qty, label }) => ({ id: p.id, name: p.name + (label ? ' (' + label + ')' : ''), price: p.price, qty })),
     itemCount: lines.reduce((a, l) => a + l.qty, 0),
     shipping: sh.cost,
-    total: cartTotal() + sh.cost
+    total: pr.total
   };
+  if (pr.discount > 0) { order.discount = pr.discount; order.coupon = pr.coupon; }
 
   // Pedido repetido (por ejemplo, tocar dos veces): no se vuelve a enviar
   const sig = JSON.stringify([order.items.map(i => i.id + ':' + i.qty).sort(), digits(c.phone)]);
   const last = lsGet('nodo_last');
-  const finish = (code, dup) => { state.sending = false; state.cart = {}; saveCart(); state.form = null; state.doneCode = code; state.dupNote = !!dup; state.cartStep = 'done'; renderCartBadge(); renderCart(); };
+  const finish = (code, dup) => { state.sending = false; state.cart = {}; state.coupon = ''; saveCart(); state.form = null;
+    lsSet('nodo_cust', remember ? { name: c.name, phone: c.phone, address: c.address || '', zone: c.zone || '', delivery: c.delivery } : null); state.doneCode = code; state.dupNote = !!dup; state.cartStep = 'done'; renderCartBadge(); renderCart(); };
   if (last && last.sig === sig && Date.now() - last.at < 180000) return finish(last.code, true);
   // Campo trampa que las personas no ven: si viene completo es un robot
   if (hp) { state.sending = true; renderCart(); await sleep(800); return finish('P-' + Math.random().toString(36).toUpperCase().slice(2, 9)); }
@@ -600,7 +632,7 @@ document.addEventListener('click', e => {
   if (t) {
     const id = t.dataset.id, a = t.dataset.act;
     if (a === 'open') openProduct(id);
-    else if (a === 'add') addToCart(id);
+    else if (a === 'add') { const p = activeProducts().find(x => x.id === id); if (p && prodVariants(p).length) openProduct(id); else addToCart(id); }
     else if (a === 'hero') setHero(+t.dataset.i);
     else if (a === 'page') { state.page = +t.dataset.i; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
     else if (a === 'railPrev' || a === 'railNext') { const r = $('#rail'); if (r) r.scrollBy({ left: (a === 'railNext' ? 1 : -1) * r.clientWidth * .8, behavior: 'smooth' }); }
@@ -614,12 +646,17 @@ document.addEventListener('click', e => {
     else if (a === 'closeDlg') t.closest('dialog').close();
     else if (a === 'pdMinus') { pdQty = Math.max(1, pdQty - 1); $('#pdQ').textContent = pdQty; }
     else if (a === 'pdPlus') { const p = state.products.find(x => x.id === $('[data-act=pdAdd]').dataset.id); pdQty = Math.min(pdQty + 1, Math.min(stockOf(p), 99)); $('#pdQ').textContent = pdQty; }
-    else if (a === 'pdAdd') { addToCart(id, pdQty); $('#dlgProduct').close(); }
+    else if (a === 'pdAdd') {
+      const parts = [];
+      for (const g of $$('#dlgProduct .vgrp')) { const c = $('input:checked', g); if (!c) return toast(`Elegí ${g.dataset.g.toLowerCase()} antes de agregar.`, { bad: true }); parts.push(g.dataset.g + ': ' + c.value); }
+      addToCart(lineKey(id, parts.join(' · ')), pdQty); $('#dlgProduct').close();
+    }
     else if (a === 'lineMinus') setQty(id, (state.cart[id] || 0) - 1);
     else if (a === 'linePlus') setQty(id, (state.cart[id] || 0) + 1);
     else if (a === 'lineRm') setQty(id, 0);
     else if (a === 'clearCart') askConfirm('¿Vaciar el carrito?', 'Vaciar').then(ok => { if (ok) { state.cart = {}; saveCart(); renderCartBadge(); renderCart(); } });
-    else if (a === 'checkout') { state.cartStep = 'checkout'; state.checkoutAt = Date.now(); renderCart(); }
+    else if (a === 'checkout') { state.cartStep = 'checkout'; state.checkoutAt = Date.now(); if (!state.form) state.form = lsGet('nodo_cust') || null; renderCart(); }
+    else if (a === 'rmCoupon') { state.coupon = ''; renderCart(); }
     else if (a === 'cartBack') { state.cartStep = 'cart'; renderCart(); }
     else if (a.startsWith('adm')) adminClick(a, t, e);
     return;
@@ -643,6 +680,10 @@ document.addEventListener('submit', e => {
   else if (f.dataset?.form) { e.preventDefault(); adminSubmit(f); }
   else if (f.id === 'loginForm') { e.preventDefault(); doLogin(f); }
   else if (f.id === 'searchForm') { e.preventDefault(); hideSugg(); }
+  else if (f.id === 'couponForm') {
+    e.preventDefault(); const code = $('#cpIn')?.value.trim(); if (!code) return;
+    if (findCoupon(code)) { state.coupon = findCoupon(code).code; renderCart(); } else { const er = $('#cpErr'); er.textContent = 'Ese código no es válido.'; er.hidden = false; }
+  }
   else if (f.id === 'trackForm') { e.preventDefault(); state.track.auto = f.code.value.trim().toUpperCase(); trackLookup(f.code.value); }
 });
 $('#q').addEventListener('input', e => {
@@ -665,7 +706,13 @@ function loadPublic() {
     const s = l.find(x => x.id === 'store');
     state.settings = { ...DEFAULT_SETTINGS, ...(s || {}) };
     if (typeof state.settings.perks === 'string') state.settings.perks = state.settings.perks.split('\n');
-    if (typeof state.settings.payMethods === 'string') state.settings.payMethods = state.settings.payMethods.split('\n');
+    for (const k of ['payMethods', 'payPickup', 'payDelivery']) if (typeof state.settings[k] === 'string') state.settings[k] = state.settings[k].split('\n');
+    { // ajustes viejos: "tarjeta en el local" / "domicilio" estaban mezcladas en la lista general
+      const st = state.settings, all = clean(st.payMethods);
+      const pick = all.filter(m => /en el local/i.test(m)), del = all.filter(m => /domicilio|\bpos\b/i.test(m));
+      st.payMethods = all.filter(m => !pick.includes(m) && !del.includes(m));
+      st.payPickup = [...new Set([...clean(st.payPickup), ...pick])]; st.payDelivery = [...new Set([...clean(st.payDelivery), ...del])];
+    }
     if (!Array.isArray(state.settings.branches)) state.settings.branches = [];
     if (typeof state.settings.hours === 'string') state.settings.hours = state.settings.hours.split('\n');
     softRender();

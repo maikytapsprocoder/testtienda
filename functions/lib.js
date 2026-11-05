@@ -16,7 +16,20 @@ function verifyItems(items, catalog /* Map id -> {price} */) {
   return { lines, verifiedTotal, mismatch };
 }
 
-function buildMessage({ code, lines, verifiedTotal, mismatch, customer, storeName, shipping = 0 }) {
+/* Descuento y envío reales (la tienda los calcula igual, acá se vuelven a verificar) */
+function priceOrder({ itemsTotal, couponCode, customer = {}, settings = {} }) {
+  const k = String(couponCode || '').trim().toUpperCase();
+  const cp = k ? (settings.coupons || []).find(c => c && String(c.code).toUpperCase() === k) : null;
+  const discount = cp ? Math.min(itemsTotal, cp.type === 'pct' ? Math.round(itemsTotal * Number(cp.value) / 100) : Number(cp.value) || 0) : 0;
+  const base = itemsTotal - discount;
+  const zone = customer.delivery === 'envio' ? (settings.shippingZones || []).find(z => z && z.name === customer.zone) : null;
+  let shipping = zone ? Math.max(0, Number(zone.cost) || 0) : 0;
+  const free = Number(settings.freeShippingFrom) || 0;
+  if (free > 0 && base >= free) shipping = 0;
+  return { discount, shipping, total: base + shipping, coupon: cp ? cp.code : '' };
+}
+
+function buildMessage({ code, lines, verifiedTotal, mismatch, customer, storeName, shipping = 0, discount = 0, coupon = '' }) {
   const items = lines.map(l => `• ${l.qty} x ${l.name} — ${money(l.price * l.qty)}`).join('\n');
   const entrega = customer.delivery === 'envio' ? `Envío a: ${customer.address || '(sin dirección)'}${customer.zone ? ' (' + customer.zone + ')' : ''}` : 'Retiro en el local';
   return [
@@ -24,8 +37,9 @@ function buildMessage({ code, lines, verifiedTotal, mismatch, customer, storeNam
     '',
     items,
     '',
+    discount > 0 ? `Descuento${coupon ? ' (' + coupon + ')' : ''}: -${money(discount)}` : null,
     shipping > 0 ? `Envío: ${money(shipping)}` : null,
-    `Total: ${money(verifiedTotal + shipping)}`,
+    `Total: ${money(verifiedTotal - discount + shipping)}`,
     '',
     `Cliente: ${customer.name}`,
     `Teléfono: ${customer.phone}`,
@@ -66,4 +80,4 @@ async function sendWhatsApp(cfg, text, fetchFn = fetch) {
   if (!res.ok || /\bERROR\b/.test(out)) throw new Error(`CallMeBot ${res.status}: ${out.replace(/<[^>]+>/g, ' ').trim().slice(0, 160)}`);
 }
 
-module.exports = { money, verifyItems, buildMessage, sendWhatsApp };
+module.exports = { money, verifyItems, priceOrder, buildMessage, sendWhatsApp };
