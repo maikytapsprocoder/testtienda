@@ -485,6 +485,10 @@ body.is-admin .top, body.is-admin .catnav, body.is-admin .perks, body.is-admin .
 .card.is-out .tag{display:none}
 .card .out{background:rgba(60,66,78,.88);letter-spacing:.02em}
 .sugg .sg-t small{color:#a15c00}
+.ask{font-size:.95rem;color:#5b6677}
+.note-cat{background:#f3f5f8;border-radius:10px;padding:10px 12px;color:#445;margin:12px 0}
+.ask{font-size:.95rem;color:#5b6677}
+.note-cat{background:#f3f5f8;border-radius:10px;padding:10px 12px;color:#445;margin:12px 0}
 
 </style>
 </head>
@@ -713,6 +717,10 @@ const DEFAULT_SETTINGS = {
   payDelivery: ['Tarjeta en domicilio (POS)'],
   showShipping: true,
   freeShippingFrom: 0,
+  catalogAll: false,
+  emailServiceId: '',
+  emailTemplateId: '',
+  emailPublicKey: '',
   coupons: [],
   footerInfo: '',
   linkFallback: false,
@@ -1086,7 +1094,7 @@ function cartLines() {
   for (const [key, q] of Object.entries(state.cart)) {
     const [pid, label] = splitKey(key);
     const p = activeProducts().find(x => x.id === pid);
-    if (!p) continue;
+    if (!p || isCatalog(p)) continue;
     // el stock y el tope por producto se reparten entre todas sus variantes
     const room = Math.max(0, Math.min(stockOf(p), maxPer()) - (used[pid] || 0));
     const qty = Math.min(Number(q) || 0, room);
@@ -1116,12 +1124,16 @@ function setQty(key, qty) {
 function addToCart(key, n = 1) {
   const [pid] = splitKey(key);
   const p = activeProducts().find(x => x.id === pid);
-  if (!p) return;
+  if (!p || isCatalog(p)) return;
   if (stockOf(p) <= 0) return toast('Este producto no tiene stock.', { bad: true });
   if (setQty(key, (state.cart[key] || 0) + n)) return;
   const b = $('#cartBtn'); b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump');
   toast('Agregado al carrito', { label: 'Ver carrito', fn: openCart });
 }
+/* Solo catálogo: no se vende online, se consulta por WhatsApp. Puede ser por producto o para toda la tienda. */
+const isCatalog = p => !!(S().catalogAll || p.catalogOnly);
+const priceHidden = p => isCatalog(p) && !!p.hidePrice;
+const consultLink = p => waLink('Hola, quiero consultar por: ' + p.name);
 const prodVariants = p => (Array.isArray(p.variants) ? p.variants : []).filter(g => g && g.name && Array.isArray(g.options) && g.options.length);
 function renderCartBadge() {
   $('#cartN').textContent = $('#cartFabN').textContent = cartCount();
@@ -1177,13 +1189,13 @@ function card(p) {
   return `<article class="card ${out ? 'is-out' : ''}">
     <button type="button" class="card-img" data-act="open" data-id="${esc(p.id)}" style="--tint:${c.tint}" aria-label="Ver ${esc(p.name)}">
       <img loading="lazy" src="${esc(imgOf(p))}" alt="" class="${(p.images && p.images[0]) || p.image ? 'photo' : ''}">
-      ${offer ? `<span class="tag">-${pct(p)}%</span>` : ''}${out ? '<span class="out">Sin stock</span>' : ''}
+      ${offer && !priceHidden(p) ? `<span class="tag">-${pct(p)}%</span>` : ''}${out && !isCatalog(p) ? '<span class="out">Sin stock</span>' : ''}
     </button>
     <div class="card-b">
       <p class="card-meta">${esc(p.brand || c.name)}</p>
       <h3 class="card-t"><button type="button" class="linkish" data-act="open" data-id="${esc(p.id)}">${esc(p.name)}</button></h3>
-      <div class="price">${offer ? `<s>${money(p.oldPrice)}</s>` : ''}<strong>${money(p.price)}</strong></div>
-      <button type="button" class="btn btn-primary" data-act="add" data-id="${esc(p.id)}" ${out ? 'disabled' : ''}>${out ? 'Sin stock' : prodVariants(p).length ? 'Elegir opciones' : 'Agregar al carrito'}</button>
+      ${priceHidden(p) ? '<div class="price"><strong class="ask">Consultar precio</strong></div>' : `<div class="price">${offer ? `<s>${money(p.oldPrice)}</s>` : ''}<strong>${money(p.price)}</strong></div>`}
+      ${isCatalog(p) ? `<button type="button" class="btn btn-line" data-act="open" data-id="${esc(p.id)}">Ver y consultar</button>` : `<button type="button" class="btn btn-primary" data-act="add" data-id="${esc(p.id)}" ${out ? 'disabled' : ''}>${out ? 'Sin stock' : prodVariants(p).length ? 'Elegir opciones' : 'Agregar al carrito'}</button>`}
     </div>
   </article>`;
 }
@@ -1355,7 +1367,7 @@ function showSugg() {
   if (!q || state.route.name === 'admin') return hideSugg();
   const res = searchProducts(q, activeProducts()).slice(0, 6);
   if (!res.length) { u.innerHTML = `<li class="sugg-none">No encontramos “${esc(q)}”. Probá con otra palabra.</li>`; u.hidden = false; return; }
-  u.innerHTML = res.map(p => `<li><button type="button" data-act="sugg" data-id="${esc(p.id)}"><img src="${esc(imgOf(p))}" alt=""><span class="sg-t">${esc(p.name)}</span><span class="sg-p">${stockOf(p) <= 0 ? "Sin stock" : money(p.price)}</span></button></li>`).join('');
+  u.innerHTML = res.map(p => `<li><button type="button" data-act="sugg" data-id="${esc(p.id)}"><img src="${esc(imgOf(p))}" alt=""><span class="sg-t">${esc(p.name)}</span><span class="sg-p">${isCatalog(p) ? (priceHidden(p) ? "Consultar" : money(p.price)) : stockOf(p) <= 0 ? "Sin stock" : money(p.price)}</span></button></li>`).join('');
   u.hidden = false;
 }
 
@@ -1424,12 +1436,12 @@ function openProduct(id) {
     <div class="pd"><div class="pd-img ${st <= 0 ? 'is-out' : ''}" style="--tint:${c.tint}"><img id="pdMain" src="${esc(imgs[0])}" alt="${esc(p.name)}">${offer ? `<span class="tag">-${pct(p)}%</span>` : ''}
       ${imgs.length > 1 ? `<div class="thumbs" role="group" aria-label="Fotos del producto">${imgs.map((u, i) => `<button type="button" data-act="gal" data-id="${esc(p.id)}" data-i="${i}" aria-label="Ver foto ${i + 1}" aria-current="${i === 0}"><img src="${esc(u)}" alt=""></button>`).join('')}</div>` : ''}</div>
     <div class="pd-b"><p class="card-meta">${esc([p.brand, p.sub].filter(Boolean).join(' · ') || c.name)}</p><h2>${esc(p.name)}</h2>
-      <div class="pd-price"><strong>${money(p.price)}</strong>${offer ? `<s>${money(p.oldPrice)}</s>` : ''}</div>${stock}
+      ${priceHidden(p) ? '<div class="pd-price"><strong class="ask">Consultar precio</strong></div>' : `<div class="pd-price"><strong>${money(p.price)}</strong>${offer ? `<s>${money(p.oldPrice)}</s>` : ''}</div>`}${isCatalog(p) ? '' : stock}
       ${p.description ? `<p class="muted">${esc(p.description)}</p>` : ''}
       ${specs.length ? `<ul class="specs">${specs.map(s => `<li>${esc(s)}</li>`).join('')}</ul>` : ''}
-      ${prodVariants(p).map((g, gi) => `<fieldset class="vgrp" data-g="${esc(g.name)}"><legend>${esc(g.name)}</legend><div class="vopts">${g.options.map(o => `<label><input type="radio" name="v${gi}" value="${esc(o)}"><span>${esc(o)}</span></label>`).join('')}</div></fieldset>`).join('')}
+      ${isCatalog(p) ? `<p class="note-cat">Este producto se consulta y se compra en el local.</p>${contactNum() ? `<a class="btn btn-primary" target="_blank" rel="noopener" href="${consultLink(p)}">Consultar por WhatsApp</a>` : `<p class="muted">Consultanos en el local${S().address ? ': ' + esc(S().address) : ''}.</p>`}` : `${prodVariants(p).map((g, gi) => `<fieldset class="vgrp" data-g="${esc(g.name)}"><legend>${esc(g.name)}</legend><div class="vopts">${g.options.map(o => `<label><input type="radio" name="v${gi}" value="${esc(o)}"><span>${esc(o)}</span></label>`).join('')}</div></fieldset>`).join('')}
       <div class="buy"><div class="qty" role="group" aria-label="Cantidad"><button type="button" data-act="pdMinus" aria-label="Menos">−</button><output id="pdQ" aria-live="polite">1</output><button type="button" data-act="pdPlus" aria-label="Más">+</button></div>
-      <button type="button" class="btn btn-primary" data-act="pdAdd" data-id="${esc(p.id)}" ${st <= 0 ? 'disabled' : ''}>Agregar al carrito</button></div>
+      <button type="button" class="btn btn-primary" data-act="pdAdd" data-id="${esc(p.id)}" ${st <= 0 ? 'disabled' : ''}>Agregar al carrito</button></div>`}
       <button type="button" class="btn btn-line btn-sm share" data-act="share" data-id="${esc(p.id)}">Compartir este producto</button></div></div>`;
   const d = $('#dlgProduct');
   if (!d.open) d.showModal();
@@ -1517,6 +1529,15 @@ function waText(order, code) {
   const c = order.customer;
   return `Hola, quiero hacer este pedido (${code}):\n${l}\n${order.shipping ? 'Envío: ' + money(order.shipping) + '\n' : ''}${order.discount ? 'Descuento (' + order.coupon + '): -' + money(order.discount) + '\n' : ''}Total: ${money(order.total)}\n\nNombre: ${c.name}\nTeléfono: ${c.phone}\n${c.payment ? 'Pago: ' + c.payment + '\n' : ''}${c.delivery === 'envio' ? 'Envío a: ' + c.address + (c.zone ? ' (' + c.zone + ')' : '') : 'Retiro en el local'}${c.note ? '\nComentarios: ' + c.note : ''}`;
 }
+/* Aviso por correo con EmailJS (gratis, sin servidor). Se configura en Ajustes > Aviso por email. */
+async function notifyEmail(order, code, test) {
+  const s = state.settings;
+  if (!s.emailServiceId || !s.emailTemplateId || !s.emailPublicKey) { if (test) throw new Error('Completá los tres datos de EmailJS.'); return; }
+  const c = order.customer;
+  const params = { subject: `${test ? 'PRUEBA · ' : ''}Nuevo pedido ${code} · ${s.storeName}`, order_code: code, store_name: s.storeName, customer_name: c.name, customer_phone: c.phone, total: money(order.total), message: waText(order, code).replace(/^Hola, quiero hacer este pedido/, 'Nuevo pedido') };
+  const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ service_id: s.emailServiceId, template_id: s.emailTemplateId, user_id: s.emailPublicKey, template_params: params }) });
+  if (!res.ok) { const t = await res.text().catch(() => ''); if (test) throw new Error('EmailJS respondió ' + res.status + ': ' + t.slice(0, 120)); console.warn('EmailJS', res.status, t); }
+}
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function submitOrder(form) {
   if (state.sending) return;
@@ -1559,6 +1580,7 @@ async function submitOrder(form) {
     await sleep(Math.max(0, 1500 - (Date.now() - state.checkoutAt))); // evita envíos instantáneos de robots
     const code = await DB.createOrder(order);
     lsSet('nodo_last', { sig, code, at: Date.now() });
+    notifyEmail(order, code); // aviso por correo al dueño (si está configurado); no frena el pedido
     finish(code, false);
     if (win) win.location.href = `https://wa.me/${digits(state.settings.waNumber)}?text=${encodeURIComponent(waText(order, code))}`;
   } catch (e) {
@@ -1881,6 +1903,8 @@ function openProductForm(id) {
     </div>
     ${galleryField(p.images && p.images.length ? p.images : (p.image ? [p.image] : []), p.art, catById(p.category).acc)}${artSelect(p.art)}
     <label class="chk"><input type="checkbox" name="active" ${p.active !== false ? 'checked' : ''}> Visible en la tienda</label>
+    <label class="chk"><input type="checkbox" name="catalogOnly" ${p.catalogOnly ? 'checked' : ''}> Solo catálogo (no se vende online: el cliente lo consulta por WhatsApp)</label>
+    <label class="chk" style="margin-left:26px"><input type="checkbox" name="hidePrice" ${p.hidePrice ? 'checked' : ''}> Ocultar el precio (muestra “Consultar precio”)</label>
     <p class="err" data-err hidden role="alert"></p>
     <div class="dlg-f"><button type="button" class="btn btn-line" data-act="closeDlg">Cancelar</button><button type="submit" class="btn btn-primary">Guardar producto</button></div></form>`);
 }
@@ -1977,7 +2001,7 @@ function settingsTab() {
     <div class="field"><label for="s-t">Frase corta</label><input class="in" id="s-t" name="tagline" value="${esc(s.tagline)}"></div>
     <div class="field"><label for="s-p">Barra de beneficios (una por línea, máximo 3)</label><textarea class="in" id="s-p" name="perks" rows="3">${esc(perks)}</textarea></div>
     <div class="field"><label for="s-pm">Medios de pago para todos (uno por línea)</label><textarea class="in" id="s-pm" name="payMethods" rows="4">${esc((s.payMethods || []).join('\n'))}</textarea><small>El cliente elige uno al confirmar el pedido. Si lo dejás vacío, no se pregunta.</small></div>
-    <div class="field"><label for="s-pp">Solo si retira en el local</label><textarea class="in" id="s-pp" name="payPickup" rows="2">${esc((s.payPickup || []).join('\n'))}</textarea><small>Ej.: Tarjeta en el local.</small></div>
+    <div class="field"><label for="s-ppk">Solo si retira en el local</label><textarea class="in" id="s-ppk" name="payPickup" rows="2">${esc((s.payPickup || []).join('\n'))}</textarea><small>Ej.: Tarjeta en el local.</small></div>
     <div class="field"><label for="s-pd">Solo si pide envío a domicilio</label><textarea class="in" id="s-pd" name="payDelivery" rows="2">${esc((s.payDelivery || []).join('\n'))}</textarea><small>Ej.: Tarjeta en domicilio (POS).</small></div>
     <label class="chk" style="margin:6px 0 14px"><input type="checkbox" name="showShipping" ${s.showShipping === false ? '' : 'checked'}> Mostrar costo de envío junto a cada localidad</label>
     <small class="muted" style="display:block;margin:-8px 0 14px">Si lo desactivás, la lista solo muestra la localidad y el costo aparece abajo, en el total.</small>
@@ -1999,6 +2023,14 @@ function settingsTab() {
     <div class="field"><label for="s-cp">Cupones de descuento (uno por línea: CÓDIGO | 10% o CÓDIGO | 200)</label><textarea class="in" id="s-cp" name="coupons" rows="3" placeholder="BIENVENIDO | 10%">${esc((s.coupons || []).map(c => c.code + ' | ' + (c.type === 'pct' ? c.value + '%' : c.value)).join('\n'))}</textarea><small>"10%" descuenta un porcentaje; un número solo descuenta ese monto fijo. Los códigos no se pueden ocultar del todo (quedan en los datos públicos de la tienda): usalos para promociones, no para secretos.</small></div>
     <div class="form-grid"><div class="field"><label for="s-mu">Máximo de unidades por pedido</label><input class="in" id="s-mu" name="maxUnits" type="number" min="1" step="1" value="${esc(s.maxUnits ?? 30)}"></div>
     <div class="field"><label for="s-mp">Máximo de unidades del mismo producto</label><input class="in" id="s-mp" name="maxPerProduct" type="number" min="1" step="1" value="${esc(s.maxPerProduct ?? 10)}"></div></div>
+    <h3 style="margin-top:22px">Modo catálogo</h3>
+    <label class="chk" style="margin-bottom:14px"><input type="checkbox" name="catalogAll" ${s.catalogAll ? 'checked' : ''}> Toda la tienda en modo catálogo (sin carrito: todo se consulta por WhatsApp)</label>
+    <h3 style="margin-top:22px">Aviso de pedidos por email</h3>
+    <p class="note" style="margin-bottom:10px">Gratis con <b>emailjs.com</b>: creá una cuenta, conectá tu correo (Email Services), creá una plantilla (Email Templates) con asunto <code>{{subject}}</code> y cuerpo <code>{{message}}</code>, y destinatario tu correo. Copiá acá los tres datos. Con eso cada pedido te llega por email.</p>
+    <div class="field"><label for="s-es">Service ID</label><input class="in" id="s-es" name="emailServiceId" value="${esc(s.emailServiceId)}" placeholder="service_xxxxxxx"></div>
+    <div class="field"><label for="s-et">Template ID</label><input class="in" id="s-et" name="emailTemplateId" value="${esc(s.emailTemplateId)}" placeholder="template_xxxxxxx"></div>
+    <div class="field"><label for="s-ek">Public Key</label><input class="in" id="s-ek" name="emailPublicKey" value="${esc(s.emailPublicKey)}"></div>
+    <div style="margin-bottom:14px"><button type="button" class="btn btn-line btn-sm" data-act="admEmailTest">Enviar correo de prueba</button> <small class="muted" id="emailTestMsg"></small></div>
     <h3 style="margin-top:22px">Textos de páginas</h3>
     <div class="field"><label for="s-ps">Servicios</label><textarea class="in" id="s-ps" name="pageServices" rows="6">${esc(s.pageServices)}</textarea><small>Línea en blanco = nuevo párrafo. Una línea que empiece con ## es un subtítulo; con - es un punto de lista.</small></div>
     <div class="field"><label for="s-pt">Condiciones de compra</label><textarea class="in" id="s-pt" name="pageTerms" rows="6">${esc(s.pageTerms)}</textarea></div>
@@ -2059,6 +2091,15 @@ function adminClick(a, t) {
   else if (a === 'admGalDel') { const f = t.closest('form'), l = galGet(f); l.splice(+t.dataset.i, 1); galSet(f, l); }
   else if (a === 'admGalMain') { const f = t.closest('form'), l = galGet(f), [x] = l.splice(+t.dataset.i, 1); l.unshift(x); galSet(f, l); }
   else if (a === 'admImgClear') { const f = t.closest('form'); f.image.value = ''; $('#f-img').value = ''; updatePreview(f); }
+  else if (a === 'admEmailTest') {
+    const f = t.closest('form'), msg = $('#emailTestMsg'); msg.textContent = 'Enviando…';
+    const keep = state.settings;
+    state.settings = { ...keep, emailServiceId: f.emailServiceId.value.trim(), emailTemplateId: f.emailTemplateId.value.trim(), emailPublicKey: f.emailPublicKey.value.trim() };
+    notifyEmail({ customer: { name: 'Cliente de prueba', phone: '099000000', delivery: 'retiro' }, items: [{ name: 'Producto de prueba', price: 100, qty: 1 }], total: 100 }, 'P-PRUEBA', true)
+      .then(() => { msg.textContent = 'Listo: revisá tu correo (y spam). Recordá tocar “Guardar ajustes”.'; })
+      .catch(e => { msg.textContent = e.message || 'No se pudo enviar.'; })
+      .finally(() => { state.settings = keep; });
+  }
   else if (a === 'admSeed') askConfirm('Se cargarán los productos y banners de ejemplo. ¿Continuar?', 'Cargar').then(ok => ok && guarded(async () => {
     for (const p of seedProducts()) await DB.save('products', p.id, p);
     for (const b of SEED_BANNERS) await DB.save('banners', b.id, b);
@@ -2120,7 +2161,7 @@ async function adminSubmit(form) {
     if (stock !== null && (Number.isNaN(stock) || stock < 0)) return formErr(form, 'El stock no es válido.');
     let images = []; try { images = JSON.parse(f.get('images') || '[]').filter(x => typeof x === 'string' && x).slice(0, MAX_IMGS); } catch { /* vacío */ }
     if (images.join('').length > 850000) return formErr(form, 'Las fotos pesan demasiado en total (límite de Firestore ~1 MB). Quitá alguna o usá enlaces.');
-    const data = { name: s('name'), category: s('category'), sub: s('sub'), brand: s('brand'), price, oldPrice: old, stock, description: s('description'), specs: String(f.get('specs') || '').trim(), variants: String(f.get('variants') || '').split('\n').map(l => { const [n, o] = l.split(':'); return { name: (n || '').trim(), options: [...new Set(String(o || '').split(',').map(x => x.trim()).filter(Boolean))].slice(0, 20) }; }).filter(g => g.name && g.options.length).slice(0, 3), images, image: images[0] || '', art: s('art'), active: f.get('active') === 'on', updatedAt: Date.now() };
+    const data = { name: s('name'), category: s('category'), sub: s('sub'), brand: s('brand'), price, oldPrice: old, stock, description: s('description'), specs: String(f.get('specs') || '').trim(), variants: String(f.get('variants') || '').split('\n').map(l => { const [n, o] = l.split(':'); return { name: (n || '').trim(), options: [...new Set(String(o || '').split(',').map(x => x.trim()).filter(Boolean))].slice(0, 20) }; }).filter(g => g.name && g.options.length).slice(0, 3), images, image: images[0] || '', art: s('art'), active: f.get('active') === 'on', catalogOnly: f.get('catalogOnly') === 'on', hidePrice: f.get('catalogOnly') === 'on' && f.get('hidePrice') === 'on', updatedAt: Date.now() };
     if (!id) data.createdAt = Date.now();
     return guarded(async () => { await DB.save('products', id, data); $('#dlgForm').close(); toast('Producto guardado'); }, form);
   }
@@ -2155,6 +2196,7 @@ async function adminSubmit(form) {
       branches: String(f.get('branches') || '').split('\n').map(l => { const [n, a, im, lk] = l.split('|').map(x => (x || '').trim()); return { name: n, address: a, image: im, link: lk }; }).filter(b => b.name).slice(0, 6),
       contactWhatsapp: digits(s('contactWhatsapp')), contactEmail: s('contactEmail'), address: s('address'), hours: String(f.get('hours') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 7),
       shippingZones: String(f.get('zones') || '').split('\n').map(l => { const [n, c] = l.split('|'); return { name: (n || '').trim(), cost: Math.max(0, Math.round(num(c) || 0)) }; }).filter(z => z.name).slice(0, 60),
+      catalogAll: f.get('catalogAll') === 'on', emailServiceId: s('emailServiceId'), emailTemplateId: s('emailTemplateId'), emailPublicKey: s('emailPublicKey'),
       freeShippingFrom: Math.max(0, Math.round(num(f.get('freeShippingFrom')) || 0)),
       coupons: String(f.get('coupons') || '').split('\n').map(l => { const [c, v] = l.split('|').map(x => (x || '').trim()); const pct = /%$/.test(v || ''); const n = num((v || '').replace('%', '')); return { code: (c || '').toUpperCase().replace(/\s+/g, ''), type: pct ? 'pct' : 'fix', value: pct ? Math.min(100, n) : n }; }).filter(c => c.code && c.value > 0).slice(0, 20),
       maxUnits: Math.max(1, Math.floor(num(f.get('maxUnits')) || 30)), maxPerProduct: Math.max(1, Math.floor(num(f.get('maxPerProduct')) || 10)),
