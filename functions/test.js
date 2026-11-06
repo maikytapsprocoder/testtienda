@@ -28,7 +28,43 @@ pr = priceOrder({ itemsTotal: 1000, couponCode: 'FIJO', customer: { delivery: 'r
 assert.deepStrictEqual([pr.discount, pr.total], [1000, 0]);
 assert.strictEqual(priceOrder({ itemsTotal: 1000, couponCode: 'NOEXISTE', customer: {}, settings: cfg }).discount, 0);
 
+{
+  const L = require('./lib');
+  const pr = L.buildPreference({ code: 'AB-12', total: 1500.456, storeName: 'Nodo Tecno!', back: 'https://x.github.io/t/', notifyUrl: 'https://f/mpWebhook' });
+  assert.strictEqual(pr.items[0].unit_price, 1500.46); assert.strictEqual(pr.external_reference, 'AB-12');
+  assert.strictEqual(pr.statement_descriptor, 'Nodo Tecno'); assert.ok(pr.back_urls.success.endsWith('#/pedido/AB-12'));
+  assert.strictEqual(L.buildPreference({ code: 'A', total: 1, back: 'javascript:alert(1)', notifyUrl: 'u' }).back_urls, undefined);
+  assert.ok(L.paymentCoversOrder({ status: 'approved', external_reference: 'AB-12', transaction_amount: 1500 }, { code: 'AB-12', verifiedTotal: 1500 }));
+  assert.ok(!L.paymentCoversOrder({ status: 'pending', external_reference: 'AB-12', transaction_amount: 1500 }, { code: 'AB-12', verifiedTotal: 1500 }));
+}
+{
+  const L = require('./lib');
+  assert.deepStrictEqual(L.mpAmountDue({}, 1000, 30), { remaining: 1000, charge: 300 });
+  assert.deepStrictEqual(L.mpAmountDue({ paidAmount: 300 }, 1000, 30), { remaining: 700, charge: 700 });
+  assert.deepStrictEqual(L.mpAmountDue({}, 1000, 0), { remaining: 1000, charge: 1000 });
+  assert.deepStrictEqual(L.mpAmountDue({ paidAmount: 1000, refunded: 0 }, 1000, 30), { remaining: 0, charge: 0 });
+  assert.strictEqual(L.mpAmountDue({ paidAmount: 1000, refunded: 400 }, 1000, 0).charge, 400);
+  const o = { code: 'P-1' };
+  const p1 = L.applyPayment(o, { id: 11, status: 'approved', external_reference: 'P-1', transaction_amount: 300 }, 1000);
+  assert.strictEqual(p1.paidAmount, 300); assert.strictEqual(p1.paid, false);
+  assert.strictEqual(L.applyPayment({ ...o, ...p1 }, { id: 11, status: 'approved', external_reference: 'P-1', transaction_amount: 300 }, 1000), null); // aviso repetido
+  const p2 = L.applyPayment({ ...o, ...p1 }, { id: 12, status: 'approved', external_reference: 'P-1', transaction_amount: 700 }, 1000);
+  assert.strictEqual(p2.paidAmount, 1000); assert.strictEqual(p2.paid, true); assert.strictEqual(p2.payments.length, 2);
+  const p3 = L.applyPayment({ ...o, ...p2 }, { id: 12, status: 'partially_refunded', external_reference: 'P-1', transaction_amount: 700, transaction_amount_refunded: 200 }, 1000);
+  assert.strictEqual(p3.refunded, 200); assert.strictEqual(p3.paid, false);
+  assert.strictEqual(L.applyPayment(o, { id: 5, status: 'pending', external_reference: 'P-1', transaction_amount: 10 }, 1000), null);
+  assert.strictEqual(L.applyPayment(o, { id: 5, status: 'approved', external_reference: 'OTRO', transaction_amount: 10 }, 1000), null);
+}
 (async () => {
+  const L3 = require('./lib');
+  let rq; await L3.mpRefundPayment('T', '99', 50.456, 'k', async (u, op) => { rq = { u, op }; return { ok: true, json: async () => ({}) }; });
+  assert.ok(rq.u.endsWith('/v1/payments/99/refunds')); assert.strictEqual(JSON.parse(rq.op.body).amount, 50.46); assert.strictEqual(rq.op.headers['X-Idempotency-Key'], 'k');
+  await L3.mpRefundPayment('T', '99', 0, 'k', async (u, op) => { rq = { op }; return { ok: true, json: async () => ({}) }; }); assert.strictEqual(rq.op.body, '{}');
+  await assert.rejects(L3.mpRefundPayment('T', '99', 1, 'k', async () => ({ ok: false, status: 400, json: async () => ({ message: 'x' }) })), /400/);
+  const L2 = require('./lib');
+  assert.strictEqual(await L2.mpCreatePreference('T', {}, async () => ({ ok: true, status: 201, json: async () => ({ init_point: 'https://www.mercadopago.com.uy/x' }) })), 'https://www.mercadopago.com.uy/x');
+  await assert.rejects(L2.mpCreatePreference('T', {}, async () => ({ ok: false, status: 401, json: async () => ({}) })), /Mercado Pago 401/);
+  await assert.rejects(L2.mpGetPayment('T', '../x', async () => ({})), /inválido/);
   // CallMeBot
   let seen;
   await sendWhatsApp({ provider: 'callmebot', phone: '59898297449', apiKey: 'K' }, 'hola\nmundo', async url => { seen = url; return { ok: true, status: 200, text: async () => 'Message queued' }; });
@@ -49,3 +85,12 @@ assert.strictEqual(priceOrder({ itemsTotal: 1000, couponCode: 'NOEXISTE', custom
   await assert.rejects(sendWhatsApp({ provider: 'callmebot', phone: '598', apiKey: '' }, 'x', fake), /WA_APIKEY/);
   console.log('OK: todas las pruebas pasaron');
 })().catch(e => { console.error('FALLÓ', e); process.exit(1); });
+{
+  const { stockPatch } = require('./lib');
+  const p = { id: 'a', stock: 5, vstock: { 'M / Negro': 3, 'L / Negro': 2 } };
+  const d = stockPatch(p, [{ id: 'a', qty: 2, vk: 'M / Negro' }], -1);
+  if (d.vstock['M / Negro'] !== 1 || d.stock !== 3) throw new Error('stockPatch vstock');
+  const r = stockPatch({ id: 'b', stock: 4 }, [{ id: 'b', qty: 9 }], -1);
+  if (r.stock !== 0) throw new Error('stockPatch plano');
+  console.log('OK stockPatch');
+}

@@ -63,10 +63,41 @@ service cloud.firestore {
     match /orderStatus/{code} {
       allow get: if true;
       allow list: if isAdmin();
-      allow create: if request.resource.data.keys().hasOnly(['status', 'updatedAt'])
+      allow create: if request.resource.data.keys().hasOnly(['status', 'updatedAt', 'createdAt', 'pids', 'items', 'total', 'shipping', 'discount', 'delivery', 'zone', 'payment', 'history'])
         && request.resource.data.status == 'nuevo'
-        && code.size() <= 20;
+        && code.size() <= 20
+        && request.resource.data.pids is list && request.resource.data.pids.size() <= 50
+        && request.resource.data.items is list && request.resource.data.items.size() <= 50
+        && request.resource.data.history is list && request.resource.data.history.size() <= 1;
       allow update, delete: if isAdmin();
+    }
+
+    // Reseñas: cualquiera puede enviar una (queda "pending"); solo se leen las aprobadas; el admin modera.
+    match /reviews/{id} {
+      allow read: if resource.data.status == 'approved' || isAdmin();
+      // Opinión abierta (solo si la tienda no exige compra verificada)
+      allow create: if reviewBase()
+        && request.resource.data.keys().hasOnly(['productId', 'name', 'rating', 'text', 'status', 'createdAt'])
+        && !(exists(/databases/$(database)/documents/settings/store) && get(/databases/$(database)/documents/settings/store).data.get('reviewsMode', 'on') == 'verified');
+      // Opinión de comprador: el pedido existe, el admin lo marcó "Entregado" y contiene el producto. Un solo id por pedido+producto.
+      allow create: if reviewBase()
+        && request.resource.data.keys().hasOnly(['productId', 'name', 'rating', 'text', 'status', 'createdAt', 'orderCode', 'verified'])
+        && request.resource.data.verified == true
+        && request.resource.data.orderCode is string
+        && id == request.resource.data.orderCode + '_' + request.resource.data.productId
+        && exists(/databases/$(database)/documents/orderStatus/$(request.resource.data.orderCode))
+        && get(/databases/$(database)/documents/orderStatus/$(request.resource.data.orderCode)).data.status == 'entregado'
+        && request.resource.data.productId in get(/databases/$(database)/documents/orderStatus/$(request.resource.data.orderCode)).data.pids;
+      allow update, delete: if isAdmin();
+    }
+    function reviewBase() {
+      let d = request.resource.data;
+      return d.status == 'pending'
+        && d.createdAt == request.time
+        && d.productId is string && d.productId.size() > 0 && d.productId.size() <= 100
+        && d.name is string && d.name.size() > 0 && d.name.size() <= 40
+        && d.rating is int && d.rating >= 1 && d.rating <= 5
+        && d.text is string && d.text.size() <= 600;
     }
 
     // Pedidos: cualquiera puede crear uno (con validación); solo admins los ven y cambian.

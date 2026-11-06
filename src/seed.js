@@ -78,6 +78,10 @@ const DEFAULT_SETTINGS = {
   cloudName: '',
   cloudPreset: '',
   transferInfo: '',
+  reviewsMode: 'on',
+  mpDeposit: 0,
+  mpRefundUrl: '',
+  mpMode: 'off', mpLink: '', mpUrl: '',
   emailServiceId: '',
   emailTemplateId: '',
   emailPublicKey: '',
@@ -139,6 +143,11 @@ const SEED_PRODUCTS = [
   _P('gabinete-atx-vidrio', 'computacion', 'Gabinetes', 'Gabinete ATX vidrio templado · 3 fans', 'Titan', 3290, 0, 12, 'tower', 'Panel lateral de vidrio y 3 ventiladores RGB incluidos.', 'Formato: ATX / mATX\nVentiladores: 3 x 120 mm RGB\nPanel: vidrio templado')
 ];
 
+const SEED_REVIEWS = [
+  { id: 'rs1', productId: 'teclado-clack-tkl', name: 'Martín', rating: 5, text: 'Muy buen teclado, el sonido de los switches es genial.', status: 'approved', createdAt: 1730000000000 },
+  { id: 'rs2', productId: 'teclado-clack-tkl', name: 'Lucía', rating: 4, text: 'Llegó rápido y funciona perfecto. Le falta el numérico pero es lo esperable.', status: 'approved', createdAt: 1730500000000 },
+  { id: 'rs3', productId: 'teclado-slim-bt', name: 'Diego', rating: 5, text: 'Cómodo y silencioso, lo uso con la notebook y el celular.', status: 'approved', createdAt: 1731000000000 }
+];
 const SEED_BANNERS = [
   { id: 'b-compu', order: 1, active: true, title: 'Semana de la computación', subtitle: 'Laptops, PCs y componentes con precios rebajados.', cta: 'Ver ofertas en PCs', link: 'computacion', color: '#2347F5', art: 'laptop', image: '' },
   { id: 'b-cel', order: 2, active: true, title: 'Tu próximo celular está acá', subtitle: 'Smartphones desde $ 5.990 y accesorios para cuidarlo.', cta: 'Ver teléfonos', link: 'telefonos', color: '#E8552B', art: 'phone', image: '' },

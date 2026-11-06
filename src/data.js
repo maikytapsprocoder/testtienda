@@ -17,20 +17,31 @@ function lsSet(k, v) {
   try { localStorage.setItem(k, JSON.stringify(v)); delete _mem[k]; } catch { _mem[k] = v; }
 }
 
+/* Datos públicos del pedido (sin nombre, teléfono ni dirección): lo que ve el cliente al seguir su pedido */
+function publicStatus(order) {
+  const c = order.customer || {};
+  return { status: 'nuevo', updatedAt: Date.now(), createdAt: Date.now(),
+    pids: [...new Set((order.items || []).map(i => String(i.id)))].slice(0, 50),
+    items: (order.items || []).slice(0, 50).map(i => ({ n: String(i.name).slice(0, 80), q: Number(i.qty) || 1, p: Number(i.price) || 0 })),
+    total: Number(order.total) || 0, shipping: Number(order.shipping) || 0, discount: Number(order.discount) || 0,
+    delivery: c.delivery === 'envio' ? 'envio' : 'retiro', zone: String(c.zone || '').slice(0, 80), payment: String(c.payment || '').slice(0, 60),
+    history: [{ s: 'nuevo', t: Date.now() }] };
+}
 const newCode = () => 'P-' + Date.now().toString(36).toUpperCase().slice(-4) + Math.random().toString(36).toUpperCase().slice(2, 5);
 
 /* ── Modo demo ── */
 function createDemoDB() {
   const subs = { products: new Set(), banners: new Set(), settings: new Set(), orders: new Set() };
-  const key = c => 'nodo_demo_' + c;
-  const read = c => lsGet(key(c)) || [];
-  const emit = c => (subs[c] || []).forEach(cb => cb(read(c)));
+  const key = c => 'nodo_demo_' + (c === 'reviewsPublic' ? 'reviews' : c);
+  const read = c => { const l = lsGet(key(c)) || []; return c === 'reviewsPublic' ? l.filter(r => r.status === 'approved') : l; };
+  const emit = c => { (subs[c] || []).forEach(cb => cb(read(c))); if (c === 'reviews') (subs.reviewsPublic || []).forEach(cb => cb(read('reviewsPublic'))); };
 
   if (!lsGet('nodo_demo_init')) {
     lsSet(key('products'), SAMPLE_ON ? seedProducts() : []);
     lsSet(key('banners'), SAMPLE_ON ? SEED_BANNERS : []);
     lsSet(key('settings'), [{ id: 'store', ...DEFAULT_SETTINGS }]);
     lsSet(key('orders'), []);
+    lsSet(key('reviews'), SAMPLE_ON ? SEED_REVIEWS : []);
     lsSet('nodo_demo_init', 1);
   }
   let admin = !!lsGet('nodo_demo_admin');
@@ -60,16 +71,19 @@ function createDemoDB() {
       const list = read('orders');
       list.unshift({ id: 'o' + Date.now().toString(36), code, status: 'nuevo', createdAt: Date.now(), stockApplied: true, ...order });
       const prods = read('products');
-      for (const it of order.items || []) { const p = prods.find(x => x.id === it.id); if (p && p.stock !== null && p.stock !== undefined) p.stock = Math.max(0, Number(p.stock) - Number(it.qty || 0)); }
+      for (const p of prods) { const pt = stockPatch(p, order.items || [], -1); if (pt) Object.assign(p, pt); }
       lsSet(key('products'), prods); emit('products');
       lsSet(key('orders'), list); emit('orders');
-      const st = read('orderStatus'); st.push({ id: code, status: 'nuevo', updatedAt: Date.now() }); lsSet(key('orderStatus'), st);
+      const st = read('orderStatus'); st.push({ id: code, ...publicStatus(order) }); lsSet(key('orderStatus'), st);
       return code;
     },
+    async createReview(r) {
+      if (r.orderCode) { const st = read('orderStatus').find(x => x.id === r.orderCode); if (!st || st.status !== 'entregado' || !(st.pids || []).includes(r.productId)) throw new Error('not-buyer'); if ((lsGet(key('reviews')) || []).some(x => x.id === r.orderCode + '_' + r.productId)) throw new Error('dup'); r = { ...r, id: r.orderCode + '_' + r.productId, verified: true }; }
+      const l = lsGet(key('reviews')) || []; l.push({ id: 'r' + Date.now().toString(36), ...r, status: 'pending', createdAt: Date.now() }); lsSet(key('reviews'), l); emit('reviews'); },
     async createAdmin() { throw new Error('En modo demo no se pueden crear usuarios reales. Conectá Firebase para usar esta función.'); },
     async getOrderStatus(code) {
       const d = read('orderStatus').find(x => x.id === code);
-      return d ? { status: d.status, updatedAt: d.updatedAt } : null;
+      return d ? { ...d, id: undefined } : null;
     },
     auth: {
       onChange(cb) { authSubs.add(cb); setTimeout(() => cb(admin ? { email: 'user' + ADMIN_DOMAIN } : null), 0); },
@@ -114,8 +128,8 @@ async function createFirebaseDB() {
   return {
     mode: 'firebase',
     subscribe(col, cb, onErr) {
-      const ref = fsM.collection(fs, col);
-      const q = col === 'orders' ? fsM.query(ref, fsM.orderBy('createdAt', 'desc')) : ref;
+      const ref = fsM.collection(fs, col === 'reviewsPublic' ? 'reviews' : col);
+      const q = col === 'orders' ? fsM.query(ref, fsM.orderBy('createdAt', 'desc')) : col === 'reviewsPublic' ? fsM.query(ref, fsM.where('status', '==', 'approved')) : ref;
       return fsM.onSnapshot(q, snap => cb(snap.docs.map(norm)), err => { console.error(col, err); onErr && onErr(err); });
     },
     async save(col, id, data) {
@@ -128,9 +142,15 @@ async function createFirebaseDB() {
       const code = newCode();
       await fsM.addDoc(fsM.collection(fs, 'orders'), { ...order, code, status: 'nuevo', createdAt: fsM.serverTimestamp() });
       // Estado público (sin datos personales) para que el cliente consulte su pedido con el código
-      try { await fsM.setDoc(fsM.doc(fs, 'orderStatus', code), { status: 'nuevo', updatedAt: Date.now() }); } catch (e) { console.warn('orderStatus', e); }
+      try { await fsM.setDoc(fsM.doc(fs, 'orderStatus', code), publicStatus(order)); } catch (e) { console.warn('orderStatus', e); }
       return code;
     },
+    async createReview(r) {
+      const data = { ...r, status: 'pending', createdAt: fsM.serverTimestamp() };
+      if (r.orderCode) { data.verified = true; await fsM.setDoc(fsM.doc(fs, 'reviews', r.orderCode + '_' + r.productId), data); } // un id fijo por pedido+producto: no se repite
+      else await fsM.addDoc(fsM.collection(fs, 'reviews'), data);
+    },
+    async idToken() { return au.currentUser ? au.currentUser.getIdToken() : ''; },
     async getOrderStatus(code) {
       const d = await fsM.getDoc(fsM.doc(fs, 'orderStatus', code));
       return d.exists() ? d.data() : null;

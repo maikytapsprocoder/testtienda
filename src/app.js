@@ -9,6 +9,10 @@ const onOffer = p => Number(p.oldPrice) > Number(p.price) && Number(p.price) > 0
 const pct = p => Math.round((1 - p.price / p.oldPrice) * 100);
 const stockOf = p => (p.stock === null || p.stock === undefined || p.stock === '') ? Infinity : Number(p.stock);
 const catOf = p => catById(p.category);
+/* Stock por combinación de variantes: p.vstock = { 'M / Negro': 3 }. Si existe, p.stock es la suma. */
+const vkOf = label => String(label || '').split(' · ').map(x => x.split(': ').slice(1).join(': ')).join(' / ');
+const hasVS = p => !!p && p.vstock && typeof p.vstock === 'object' && Object.keys(p.vstock).length > 0;
+const vStockOf = (p, label) => hasVS(p) && label ? Math.max(0, Number(p.vstock[vkOf(label)]) || 0) : Infinity;
 const lum = hex => { const m = /^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(hex || ''); if (!m) return 0; const [r, g, b] = [1, 2, 3].map(i => parseInt(m[i], 16) / 255); return .2126 * r + .7152 * g + .0722 * b; };
 const digits = s => String(s || '').replace(/\D/g, '');
 const uyPhone = s => { const d = digits(s); if (d.startsWith('598')) return d; if (d.startsWith('0')) return '598' + d.slice(1); return d; };
@@ -60,6 +64,7 @@ function fuzzyHit(v, text) {
   return text.split(' ').some(w => w.length >= 3 && (lev(v, w) <= max || (w.length > v.length && lev(v, w.slice(0, v.length)) <= max)));
 }
 function searchProducts(q, list) {
+  { const bc = typeof findByBarcode === 'function' && /^\d{6,14}$/.test(String(q).trim()) ? findByBarcode(q, list) : null; if (bc) return [bc]; }
   const groups = norm(q).split(' ').filter(Boolean).map(variantsOf);
   if (!groups.length) return [];
   const out = [];
@@ -87,7 +92,7 @@ function searchProducts(q, list) {
 
 /* ───────── Estado ───────── */
 const state = {
-  products: [], banners: [], orders: [], settings: { ...DEFAULT_SETTINGS },
+  products: [], banners: [], orders: [], reviews: [], reviewsAll: [], settings: { ...DEFAULT_SETTINGS },
   loaded: { products: false, banners: false }, error: '',
   cart: lsGet('nodo_cart') || {}, cartStep: 'cart', doneCode: '', orderErr: '', sending: false,
   route: { name: 'home' }, q: '', sub: '', sort: 'rel', onlyOffers: false, inStock: false,
@@ -148,7 +153,7 @@ function cartLines() {
     if (!p || isCatalog(p)) continue;
     // el stock y el tope por producto se reparten entre todas sus variantes
     const room = Math.max(0, Math.min(stockOf(p), maxPer()) - (used[pid] || 0));
-    const qty = Math.min(Number(q) || 0, room);
+    const qty = Math.min(Number(q) || 0, room, vStockOf(p, label));
     if (qty > 0) { used[pid] = (used[pid] || 0) + qty; out.push({ key, p, qty, label, sub: p.price * qty }); }
   }
   return out;
@@ -163,6 +168,8 @@ function setQty(key, qty) {
   if (!p) return '';
   let reason = '';
   qty = Math.max(0, qty);
+  const vs = vStockOf(p, splitKey(key)[1]);
+  if (qty > vs) { qty = vs; reason = 'stock'; toast(vs > 0 ? `Solo quedan ${vs} unidades de esa opción.` : 'Esa opción está agotada.', { bad: true }); }
   const sib = cartLines().filter(l => l.p.id === pid && l.key !== key).reduce((a, l) => a + l.qty, 0); // otras variantes del mismo producto
   if (qty > stockOf(p) - sib) { qty = Math.max(0, stockOf(p) - sib); reason = 'stock'; toast(`Solo quedan ${stockOf(p)} unidades de este producto.`, { bad: true }); }
   if (qty > maxPer() - sib) { qty = Math.max(0, maxPer() - sib); reason = 'per'; toast(`Podés llevar hasta ${maxPer()} unidades de cada producto por pedido. Si necesitás más, escribinos por WhatsApp.`, { bad: true }); }
@@ -184,6 +191,60 @@ function addToCart(key, n = 1) {
 /* Solo catálogo: no se vende online, se consulta por WhatsApp. Puede ser por producto o para toda la tienda. */
 const favs = () => { const l = lsGet('nodo_fav'); return Array.isArray(l) ? l : []; };
 const isFav = id => favs().includes(id);
+/* ───────── Reseñas ───────── */
+const reviewsOn = () => S().reviewsMode !== 'off';
+const revsOf = pid => (state.reviews || []).filter(r => r.productId === pid && r.status === 'approved').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+const ratingOf = pid => { const l = revsOf(pid); return { n: l.length, avg: l.length ? l.reduce((t, r) => t + (Number(r.rating) || 0), 0) / l.length : 0 }; };
+const starStr = n => '★'.repeat(Math.round(n)) + '☆'.repeat(5 - Math.round(n));
+const ratingChip = pid => { if (!reviewsOn()) return ''; const r = ratingOf(pid); return r.n ? `<p class="rate" aria-label="Valoración ${r.avg.toFixed(1)} de 5, ${r.n} opinion${r.n === 1 ? '' : 'es'}"><span class="stars" aria-hidden="true">${starStr(r.avg)}</span> <small>${r.avg.toFixed(1)} (${r.n})</small></p>` : ''; };
+const fmtRevDate = t => { try { return new Date(t).toLocaleDateString('es-UY', { day: 'numeric', month: 'short', year: 'numeric' }); } catch { return ''; } };
+const REV_PER = 4;
+function reviewsSection(p) {
+  if (!reviewsOn()) return '';
+  const l = revsOf(p.id), r = ratingOf(p.id), done = (lsGet('nodo_rev') || {})[p.id];
+  const ui = (state.revUi = state.revUi || {})[p.id] || (state.revUi[p.id] = { page: 0, open: false });
+  const pages = Math.max(1, Math.ceil(l.length / REV_PER)); ui.page = Math.min(ui.page, pages - 1);
+  const dist = [5, 4, 3, 2, 1].map(n => ({ n, c: l.filter(x => Math.round(x.rating) === n).length }));
+  const pager = pages > 1 ? `<nav class="rev-pg" aria-label="Páginas de opiniones"><button type="button" class="pgb" data-act="revPage" data-pid="${esc(p.id)}" data-i="${ui.page - 1}" ${ui.page === 0 ? 'disabled' : ''} aria-label="Anterior">‹</button>${Array.from({ length: pages }, (_, i) => `<button type="button" class="pgb ${i === ui.page ? 'on' : ''}" data-act="revPage" data-pid="${esc(p.id)}" data-i="${i}" ${i === ui.page ? 'aria-current="page"' : ''}>${i + 1}</button>`).join('')}<button type="button" class="pgb" data-act="revPage" data-pid="${esc(p.id)}" data-i="${ui.page + 1}" ${ui.page >= pages - 1 ? 'disabled' : ''} aria-label="Siguiente">›</button></nav>` : '';
+  return `<details class="revs" id="revs" data-pid="${esc(p.id)}" ${ui.open ? 'open' : ''}>
+    <summary><span class="rv-t">Opiniones</span>${r.n ? `<span class="rv-avg"><b>${r.avg.toFixed(1)}</b><span class="stars" aria-hidden="true">${starStr(r.avg)}</span><small>${r.n} opinion${r.n === 1 ? '' : 'es'}</small></span>` : '<small class="muted">Sé el primero en opinar</small>'}<i class="rv-chev" aria-hidden="true"></i></summary>
+    <div class="rv-body">
+      ${r.n ? `<div class="rv-dist" aria-hidden="true">${dist.map(d => `<div><span>${d.n}★</span><i><u style="width:${Math.round(d.c / r.n * 100)}%"></u></i><small>${d.c}</small></div>`).join('')}</div>` : ''}
+      ${l.length ? `<ul class="rev-list">${l.slice(ui.page * REV_PER, ui.page * REV_PER + REV_PER).map(x => `<li><div class="rev-h"><span class="rv-av" aria-hidden="true">${esc((x.name || '?').trim().charAt(0).toUpperCase())}</span><div><b>${esc(x.name)}${x.verified ? ' <span class="vbadge" title="Compró este producto en la tienda">✓ Compra verificada</span>' : ''}</b><small class="muted">${fmtRevDate(x.createdAt)}</small></div><span class="stars" aria-label="${x.rating} de 5">${starStr(x.rating)}</span></div>${x.text ? `<p>${esc(x.text)}</p>` : ''}</li>`).join('')}</ul>${pager}` : '<p class="muted">Todavía no hay opiniones de este producto.</p>'}
+      ${done ? '<p class="note">Gracias por tu opinión. Se publica cuando la revisamos.</p>' : `<details class="rev-form"><summary class="btn btn-line btn-sm">Dejar una opinión</summary>
+        <div class="rev-in" data-pid="${esc(p.id)}"><fieldset class="rstars"><legend>Tu puntaje</legend>${[5, 4, 3, 2, 1].map(n => `<input type="radio" name="rv-r" id="rv-${n}" value="${n}"><label for="rv-${n}" title="${n} de 5"><span class="sr">${n} estrellas</span>★</label>`).join('')}</fieldset>
+        <div class="field"><label for="rv-o">Código de tu pedido ${S().reviewsMode === 'verified' ? '' : '(opcional)'}</label><input class="in" id="rv-o" maxlength="20" autocomplete="off" autocapitalize="characters" placeholder="Ej.: P-AB12CDE"><small class="muted">${S().reviewsMode === 'verified' ? 'Solo opinan quienes compraron: usá el código de un pedido ya entregado.' : 'Si lo ponés, tu opinión se marca como “Compra verificada”.'}</small></div>
+        <div class="field"><label for="rv-n">Tu nombre</label><input class="in" id="rv-n" maxlength="40" autocomplete="given-name"></div>
+        <div class="field"><label for="rv-t">Comentario (opcional)</label><textarea class="in" id="rv-t" rows="3" maxlength="600"></textarea></div>
+        <input type="text" id="rv-h" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px">
+        <p class="err" id="rv-e" hidden role="alert"></p><button type="button" class="btn btn-primary btn-sm" data-act="revSend">Enviar opinión</button></div></details>`}
+    </div>
+  </details>`;
+}
+function refreshReviews() { // las opiniones llegan después de abrir la ficha: se actualizan sin cerrarla
+  const sec = $('#dlgProduct #revs');
+  if (!sec || $('.rev-form[open]', sec)) return;
+  const p = state.products.concat(SAMPLE).find(x => x.id === sec.dataset.pid); if (!p) return;
+  sec.outerHTML = reviewsSection(p);
+  const h = $('#dlgProduct .pd-b h2'), old = $('#dlgProduct .pd-b .rate'); if (old) old.remove(); if (h) h.insertAdjacentHTML('afterend', ratingChip(p.id));
+}
+document.addEventListener('toggle', e => { const d = e.target; if (d && d.id === 'revs' && d.dataset.pid) { (state.revUi = state.revUi || {})[d.dataset.pid] = { ...(state.revUi[d.dataset.pid] || { page: 0 }), open: d.open }; } }, true);
+async function sendReview(btn) {
+  const box = btn.closest('.rev-in'), pid = box.dataset.pid, err = m => { const e = $('#rv-e'); e.textContent = m; e.hidden = false; };
+  const rating = +(($('input[name=rv-r]:checked', box) || {}).value || 0), name = $('#rv-n').value.trim(), text = $('#rv-t').value.trim();
+  if ($('#rv-h').value) return; // trampa para bots
+  if (!rating) return err('Elegí un puntaje de 1 a 5 estrellas.');
+  if (!name) return err('Escribí tu nombre.');
+  const oc = $('#rv-o').value.trim().toUpperCase(); if (S().reviewsMode === 'verified' && !oc) return err('Escribí el código de tu pedido (lo recibiste al comprar).');
+  const done = lsGet('nodo_rev') || {}; if (done[pid] && !oc) return err('Ya dejaste una opinión sobre este producto.');
+  btn.disabled = true;
+  try {
+    await DB.createReview({ productId: pid, name: name.slice(0, 40), rating, text: text.slice(0, 600), ...(oc ? { orderCode: oc } : {}) });
+    done[pid] = 1; lsSet('nodo_rev', done);
+    toast('¡Gracias! Tu opinión se publica cuando la revisemos.');
+    const s = $('#revs'); if (s) s.outerHTML = reviewsSection(state.products.concat(SAMPLE).find(x => x.id === pid));
+  } catch (e) { console.error(e); btn.disabled = false; const m = String(e && (e.message || e.code) || ''); err(oc && /not-buyer|permission|insufficient/i.test(m) ? 'No encontramos un pedido entregado con ese código que incluya este producto. Si ya lo recibiste, esperá a que lo marquemos como entregado.' : /dup/.test(m) ? 'Ya opinaste sobre este producto con ese pedido.' : 'No pudimos enviar tu opinión. Intentá de nuevo en unos minutos.'); }
+}
 const heartBtn = p => `<button type="button" class="heart" data-act="fav" data-id="${esc(p.id)}" aria-pressed="${isFav(p.id)}" aria-label="${isFav(p.id) ? 'Quitar de favoritos' : 'Guardar en favoritos'}"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3 5 6.2 5c1.9 0 3.2 1 3.8 2 .6-1 1.900-2 3.800-2 3.200 0 5.300 3.200 3.800 6.700C19.500 16.400 12 21 12 21Z"/></svg></button>`;
 function toggleFav(id) {
   const l = favs(), i = l.indexOf(id); if (i >= 0) l.splice(i, 1); else l.push(id);
@@ -255,6 +316,7 @@ function card(p) {
     <div class="card-b">
       <p class="card-meta">${esc(p.brand || c.name)}</p>
       <h3 class="card-t"><button type="button" class="linkish" data-act="open" data-id="${esc(p.id)}">${esc(p.name)}</button></h3>
+      ${ratingChip(p.id)}
       ${priceHidden(p) ? '<div class="price"><strong class="ask">Consultar precio</strong></div>' : `<div class="price">${offer ? `<s>${money(p.oldPrice)}</s>` : ''}<strong>${money(p.price)}</strong></div>`}
       ${isCatalog(p) ? `<button type="button" class="btn btn-line" data-act="open" data-id="${esc(p.id)}">Ver y consultar</button>` : `<button type="button" class="btn btn-primary" data-act="add" data-id="${esc(p.id)}" ${out ? 'disabled' : ''}>${out ? 'Sin stock' : prodVariants(p).length ? 'Elegir opciones' : 'Agregar al carrito'}</button>`}
     </div>
@@ -375,21 +437,34 @@ function textPage(page) {
   const m = { servicios: ['Servicios', s.pageServices], condiciones: ['Condiciones de compra', s.pageTerms], privacidad: ['Política de privacidad', s.pagePrivacy] }[page];
   return `<div class="wrap page">${pageHead(m[0])}<div class="prose">${richText(m[1])}</div>${page === 'servicios' && contactNum() ? `<p style="margin-top:20px"><a class="btn btn-primary" target="_blank" rel="noopener" href="${waLink('Hola, quiero consultar por un servicio técnico')}">Consultar por WhatsApp</a></p>` : ''}</div>`;
 }
-const TRACK_STEPS = [['nuevo', 'Recibido'], ['atendido', 'Atendido'], ['entregado', 'Entregado']];
+const trackSteps = r => [['nuevo', 'Recibido'], ['atendido', 'En preparación'], ['listo', r && r.delivery === 'envio' ? 'En camino' : 'Listo para retirar'], ['entregado', 'Entregado']];
+const payInfo = r => { const total = Number(r.total) || 0, paid = Number(r.paidAmount) || (r.paid ? total : 0), ref = Number(r.refunded) || 0, net = Math.max(0, paid - ref); return { total, paid, ref, net, due: r.status === 'cancelado' ? 0 : Math.max(0, total - net) }; };
 function trackPage() {
   const t = state.track, r = t.res;
   let body = '';
   if (r) {
-    if (r.status === 'cancelado') body = `<p class="chipst bad" style="margin-top:18px">Pedido cancelado</p><p class="muted">Si tenés dudas, escribinos por WhatsApp.</p>`;
-    else {
-      const idx = Math.max(0, TRACK_STEPS.findIndex(x => x[0] === r.status));
-      body = `<ol class="steps" aria-label="Estado del pedido">${TRACK_STEPS.map(([k, l], i) => `<li class="${i < idx ? 'done' : i === idx ? 'now' : ''}" ${i === idx ? 'aria-current="step"' : ''}><span>${l}</span></li>`).join('')}</ol>${r.updatedAt ? `<p class="note">Última actualización: ${esc(fmtDate(r.updatedAt))}</p>` : ''}`;
-    }
+    const hist = Array.isArray(r.history) ? r.history : [], when = k => { const h = [...hist].reverse().find(x => x.s === k); return h ? fmtDate(h.t) : ''; };
+    const steps = trackSteps(r), cancelled = r.status === 'cancelado', idx = Math.max(0, steps.findIndex(x => x[0] === r.status)), pi = payInfo(r);
+    const items = Array.isArray(r.items) ? r.items : [], sub = items.reduce((a, i) => a + (Number(i.p) || 0) * (Number(i.q) || 0), 0);
+    body = `<div class="trk">
+      <div class="trk-h"><div><small class="muted">Pedido</small><b class="code">${esc(t.code)}</b></div><div class="muted">${r.createdAt ? esc(fmtDate(r.createdAt)) + ' · ' : ''}${r.delivery === 'envio' ? 'Envío' + (r.zone ? ' a ' + esc(r.zone) : '') : 'Retiro en el local'}</div></div>
+      ${cancelled ? '<p class="chipst bad" style="margin:14px 0">Pedido cancelado</p>' : `<ol class="steps tl" aria-label="Estado del pedido">${steps.map(([k, l], i) => `<li class="${i < idx ? 'done' : i === idx ? 'now' : ''}" ${i === idx ? 'aria-current="step"' : ''}><i aria-hidden="true">${i < idx ? '✓' : i + 1}</i><span>${l}</span><small>${esc(when(k))}</small></li>`).join('')}</ol>`}
+      ${r.note ? `<div class="trk-note"><b>Mensaje de la tienda</b><p>${esc(r.note).replace(/\n/g, '<br>')}</p></div>` : ''}
+      ${hist.length > 1 ? `<details class="trk-hist"><summary>Historial</summary><ul class="plain">${[...hist].reverse().map(h => `<li><span>${esc(STATUS_LBL[h.s] || h.s)}</span><small class="muted">${esc(fmtDate(h.t))}</small></li>`).join('')}</ul></details>` : ''}
+      ${items.length ? `<div class="panel trk-box"><h3>Tu compra</h3><ul class="plain">${items.map(i => `<li><span>${esc(i.q)} × ${esc(i.n)}</span><b>${money((Number(i.p) || 0) * (Number(i.q) || 0))}</b></li>`).join('')}</ul>
+        <div class="trk-tot">${Number(r.discount) ? `<div><span>Descuento</span><span>− ${money(r.discount)}</span></div>` : ''}${r.delivery === 'envio' ? `<div><span>Envío</span><span>${Number(r.shipping) ? money(r.shipping) : 'Sin costo'}</span></div>` : ''}<div class="tt"><span>Total</span><b>${money(r.total || sub)}</b></div></div></div>` : ''}
+      <div class="panel trk-box"><h3>Pago</h3>${r.payment ? `<p class="muted">Forma de pago: ${esc(r.payment)}</p>` : ''}
+        ${pi.paid || pi.ref ? `<ul class="plain"><li><span>Pagado</span><b class="okc">${money(pi.paid)}</b></li>${pi.ref ? `<li><span>Reembolsado</span><b>${money(pi.ref)}</b></li>` : ''}${pi.due > 0 ? `<li><span>Saldo a pagar</span><b>${money(pi.due)}</b></li>` : ''}</ul>` : '<p class="muted">Todavía no registramos ningún pago.</p>'}
+        ${pi.paid && pi.due <= 0 && !cancelled ? '<p class="chipst ok">Pago acreditado ✓</p>' : ''}${pi.ref && cancelled ? '<p class="note">Te devolvimos el dinero a tu medio de pago original. Puede demorar unos días en verse reflejado.</p>' : ''}
+        ${pi.due > 0 && mpOn() && S().mpMode === 'api' && /mercado/i.test(r.payment || '') ? `<p><button type="button" class="btn btn-primary btn-sm" data-act="mpPay" data-code="${esc(t.code)}">${pi.paid ? 'Pagar el saldo' : 'Pagar ahora'} con Mercado Pago</button></p>` : ''}${t.payErr ? `<p class="err" role="alert">${esc(t.payErr)}</p>` : ''}</div>
+      ${contactNum() ? `<p><a class="btn btn-line btn-sm" target="_blank" rel="noopener" href="${waLink('Hola, consulto por mi pedido ' + t.code)}">Consultar por WhatsApp</a></p>` : ''}
+    </div>`;
   }
   return `<div class="wrap page">${pageHead('Seguimiento de pedido')}<p class="muted">Ingresá el código que te dimos al confirmar tu pedido.</p>
     <form id="trackForm" class="trackform"><label class="sr" for="tc">Código del pedido</label><input class="in" id="tc" name="code" value="${esc(t.code)}" placeholder="Ej.: P-AB12CDE" autocomplete="off" autocapitalize="characters"><button class="btn btn-primary" type="submit" ${t.loading ? 'disabled' : ''}>${t.loading ? 'Buscando…' : 'Ver estado'}</button></form>
     ${t.err ? `<p class="err" role="alert">${esc(t.err)}</p>` : ''}${body}</div>`;
 }
+const STATUS_LBL = { nuevo: 'Recibido', atendido: 'En preparación', listo: 'Listo / en camino', entregado: 'Entregado', cancelado: 'Cancelado' };
 async function trackLookup(code) {
   const t = state.track;
   t.code = String(code || '').trim().toUpperCase(); t.res = null; t.err = '';
@@ -487,6 +562,17 @@ function render() {
 
 /* ───────── Producto ───────── */
 let pdQty = 1;
+/* Tacha las opciones sin stock según lo ya elegido en los otros grupos */
+function refreshVOpts() {
+  const pd = $('[data-act=pdAdd]'), p = pd && state.products.find(x => x.id === pd.dataset.id);
+  if (!p || !hasVS(p)) return;
+  const groups = prodVariants(p), sel = groups.map((g, gi) => { const c = $(`#dlgProduct input[name=v${gi}]:checked`); return c ? c.value : null; });
+  groups.forEach((g, gi) => $$(`#dlgProduct input[name=v${gi}]`).forEach(inp => {
+    const trial = sel.map((v, i) => i === gi ? inp.value : v);
+    const ok = Object.entries(p.vstock).some(([k, n]) => Number(n) > 0 && k.split(' / ').every((part, i) => trial[i] === null || trial[i] === undefined || trial[i] === part));
+    inp.closest('label').classList.toggle('vout', !ok);
+  }));
+}
 const productImages = p => { const l = Array.isArray(p.images) && p.images.length ? p.images : (p.image ? [p.image] : []); return l.length ? l : [imgOf(p)]; };
 function openProduct(id) {
   const p = activeProducts().find(x => x.id === id);
@@ -498,7 +584,7 @@ function openProduct(id) {
   $('#dlgProduct').innerHTML = `<button type="button" class="dlg-x" data-act="closeDlg" aria-label="Cerrar">×</button>
     <div class="pd"><div class="pd-img ${st <= 0 ? 'is-out' : ''}" style="--tint:${c.tint}">${heartBtn(p)}<img id="pdMain" src="${esc(imgs[0])}" alt="${esc(p.name)}">${offer ? `<span class="tag">-${pct(p)}%</span>` : ''}
       ${imgs.length > 1 ? `<div class="thumbs" role="group" aria-label="Fotos del producto">${imgs.map((u, i) => `<button type="button" data-act="gal" data-id="${esc(p.id)}" data-i="${i}" aria-label="Ver foto ${i + 1}" aria-current="${i === 0}"><img src="${esc(u)}" alt=""></button>`).join('')}</div>` : ''}</div>
-    <div class="pd-b"><p class="card-meta">${esc([p.brand, p.sub].filter(Boolean).join(' · ') || c.name)}</p><h2>${esc(p.name)}</h2>
+    <div class="pd-b"><p class="card-meta">${esc([p.brand, p.sub].filter(Boolean).join(' · ') || c.name)}</p><h2>${esc(p.name)}</h2>${ratingChip(p.id)}
       ${priceHidden(p) ? '<div class="pd-price"><strong class="ask">Consultar precio</strong></div>' : `<div class="pd-price"><strong>${money(p.price)}</strong>${offer ? `<s>${money(p.oldPrice)}</s>` : ''}</div>`}${isCatalog(p) ? '' : stock}
       ${p.description ? `<p class="muted">${esc(p.description)}</p>` : ''}
       ${specs.length ? `<ul class="specs">${specs.map(s => `<li>${esc(s)}</li>`).join('')}</ul>` : ''}
@@ -506,10 +592,11 @@ function openProduct(id) {
       <div class="buy"><div class="qty" role="group" aria-label="Cantidad"><button type="button" data-act="pdMinus" aria-label="Menos">−</button><output id="pdQ" aria-live="polite">1</output><button type="button" data-act="pdPlus" aria-label="Más">+</button></div>
       <button type="button" class="btn btn-primary" data-act="pdAdd" data-id="${esc(p.id)}" ${st <= 0 ? 'disabled' : ''}>Agregar al carrito</button></div>`}
       <button type="button" class="btn btn-line btn-sm share" data-act="share" data-id="${esc(p.id)}">Compartir este producto</button></div></div>
+    ${reviewsSection(p)}
     ${(() => { const rel = activeProducts().filter(x => x.id !== p.id && x.category === p.category).sort((a, b) => (stockOf(a) <= 0) - (stockOf(b) <= 0)).slice(0, 4); return rel.length ? `<section class="related"><h3>También te puede interesar</h3><div class="rel-grid">${rel.map(x => `<button type="button" class="rel" data-act="open" data-id="${esc(x.id)}"><img loading="lazy" src="${esc(imgOf(x))}" alt=""><span>${esc(x.name)}</span><b>${priceHidden(x) ? 'Consultar' : money(x.price)}</b></button>`).join('')}</div></section>` : ''; })()}`;
   const d = $('#dlgProduct');
   if (!d.open) d.showModal();
-  d.scrollTop = 0;
+  d.scrollTop = 0; refreshVOpts();
   document.title = `${p.name} · ${S().storeName}`;
   if (!location.hash.startsWith('#/p/')) state.prevHash = location.hash || '#/';
   try { history.replaceState(null, '', '#/p/' + encodeURIComponent(p.id)); } catch { /* file:// o iframe */ }
@@ -532,7 +619,7 @@ function renderCart() {
   const d = $('#dlgCart'), lines = cartLines(), total = cartTotal();
   const head = (t, back) => `<div class="dr-h">${back ? `<button type="button" class="btn btn-line btn-sm" data-act="cartBack">Volver</button>` : `<h2>${t}</h2>`}<button type="button" class="dlg-x x" data-act="closeDlg" aria-label="Cerrar">×</button></div>`;
   if (state.cartStep === 'done') {
-    d.innerHTML = head('Pedido') + `<div class="dr-body"><div class="done"><div class="ok" aria-hidden="true">✓</div><h3>¡Recibimos tu pedido!</h3><p>Te escribimos por WhatsApp para coordinar el pago y la entrega.</p><span class="code">${esc(state.doneCode)}</span>${S().transferInfo && /transfer/i.test(state.donePay || '') ? `<div class="xfer"><b>Datos para la transferencia</b><p>${esc(S().transferInfo).replace(/\n/g, '<br>')}</p></div>` : ''}<p class="note" style="margin-top:14px">Guardá este código: con él podés ver el estado de tu pedido.</p><p><a class="btn btn-line btn-sm" href="#/pedido/${esc(state.doneCode)}" data-act="closeDlg">Seguir mi pedido</a></p>${state.dupNote ? '<p class="note">Ya habíamos recibido este pedido, no hace falta enviarlo de nuevo.</p>' : ''}</div></div><div class="dr-f"><button type="button" class="btn btn-primary" data-act="closeDlg">Seguir mirando productos</button></div>`;
+    d.innerHTML = head('Pedido') + `<div class="dr-body"><div class="done"><div class="ok" aria-hidden="true">✓</div><h3>¡Recibimos tu pedido!</h3><p>Te escribimos por WhatsApp para coordinar el pago y la entrega.</p><span class="code">${esc(state.doneCode)}</span>${S().transferInfo && /transfer/i.test(state.donePay || '') ? `<div class="xfer"><b>Datos para la transferencia</b><p>${esc(S().transferInfo).replace(/\n/g, '<br>')}</p></div>` : ''}<p class="note" style="margin-top:14px">Guardá este código: con él podés ver el estado de tu pedido.</p><p><a class="btn btn-line btn-sm" href="#/pedido/${esc(state.doneCode)}" data-act="closeDlg">Seguir mi pedido</a></p>${state.donePay === MP && mpOn() ? mpBox() : ''}${state.dupNote ? '<p class="note">Ya habíamos recibido este pedido, no hace falta enviarlo de nuevo.</p>' : ''}</div></div><div class="dr-f"><button type="button" class="btn btn-primary" data-act="closeDlg">Seguir mirando productos</button></div>`;
     return;
   }
   if (!lines.length) {
@@ -562,7 +649,7 @@ function renderCart() {
   }
   d.innerHTML = head(`Tu carrito (${cartCount()})`) + `<div class="dr-body">${lines.map(({ key, p, qty, sub, label }) => `<div class="line">
       <img src="${esc(imgOf(p))}" alt="" style="--tint:${catOf(p).tint}">
-      <div><p class="line-t">${esc(p.name)}</p>${label ? `<p class="line-v">${esc(label)}</p>` : ''}<p class="line-u">${money(p.price)} c/u${Number.isFinite(stockOf(p)) && stockOf(p) <= 5 ? ` · <b class="lowst">Quedan ${stockOf(p)}</b>` : ''}</p>
+      <div><p class="line-t">${esc(p.name)}</p>${label ? `<p class="line-v">${esc(label)}</p>` : ''}<p class="line-u">${money(p.price)} c/u${(() => { const n = Math.min(stockOf(p), vStockOf(p, label)); return Number.isFinite(n) && n <= 5 ? ` · <b class="lowst">Quedan ${n}</b>` : ''; })()}</p>
       <div class="line-r"><div class="qty sm" role="group" aria-label="Cantidad de ${esc(p.name)}"><button type="button" data-act="lineMinus" data-id="${esc(key)}" aria-label="Menos">−</button><output>${qty}</output><button type="button" data-act="linePlus" data-id="${esc(key)}" aria-label="Más">+</button></div><span class="line-sub">${money(sub)}</span></div>
       <button type="button" class="rm" data-act="lineRm" data-id="${esc(key)}">Quitar</button></div></div>`).join('')}</div>
     <div class="dr-f">${couponList().length ? `<form class="coupon" id="couponForm">${state.coupon && findCoupon(state.coupon) ? `<span class="chipst ok">Cupón ${esc(findCoupon(state.coupon).code)} aplicado</span><button type="button" class="rm" data-act="rmCoupon">Quitar</button>` : `<input class="in" id="cpIn" placeholder="Código de descuento" autocomplete="off" aria-label="Código de descuento"><button type="submit" class="btn btn-line btn-sm">Aplicar</button>`}</form><p class="err" id="cpErr" role="alert" hidden></p>` : ''}
@@ -589,8 +676,11 @@ function pickupDays() {
   for (let i = 0; i < 7; i++) { const d = new Date(Date.now() + i * 864e5); const t = fmt.format(d); out.push((i === 0 ? 'Hoy' : i === 1 ? 'Mañana' : t.charAt(0).toUpperCase() + t.slice(1)) + (i < 2 ? ' (' + t + ')' : '')); }
   return out;
 }
-const payList = delivery => [...new Set([...clean(state.settings.payMethods), ...clean(delivery === 'envio' ? state.settings.payDelivery : state.settings.payPickup)])];
-const payHTML = (delivery, sel) => { const l = payList(delivery); return l.length ? `<span>¿Cómo querés pagar?</span><div class="radios" role="radiogroup">${l.map(m => `<label><input type="radio" name="payment" value="${esc(m)}" ${sel === m ? 'checked' : ''}> ${esc(m)}</label>`).join('')}</div>` : ''; };
+const MP = 'Mercado Pago';
+const mpOn = () => { const s = state.settings; return (s.mpMode === 'link' && /^https:\/\//i.test(s.mpLink || '')) || (s.mpMode === 'api' && /^https:\/\//i.test(s.mpUrl || '')); };
+const payBase = delivery => [...new Set([...clean(state.settings.payMethods), ...clean(delivery === 'envio' ? state.settings.payDelivery : state.settings.payPickup)])].filter(m => m !== MP);
+const payList = delivery => [...payBase(delivery), ...(mpOn() ? [MP] : [])]; // opciones realmente elegibles
+const payHTML = (delivery, sel) => { const l = [...payBase(delivery), MP]; return `<span>¿Cómo querés pagar?</span><div class="radios" role="radiogroup">${l.map(m => m === MP && !mpOn() ? `<label class="pay-off"><input type="radio" name="payment" value="${esc(m)}" disabled> ${esc(m)} <b>· No disponible</b></label>` : `<label><input type="radio" name="payment" value="${esc(m)}" ${sel === m ? 'checked' : ''}> ${esc(m)}</label>`).join('')}</div>`; };
 function readCheckout(form) {
   const f = new FormData(form);
   return { name: String(f.get('name') || '').trim(), phone: String(f.get('phone') || '').trim(), delivery: f.get('delivery') === 'envio' ? 'envio' : 'retiro', address: String(f.get('address') || '').trim(), zone: String(f.get('zone') || ''), pickupDay: String(f.get('pickupDay') || ''), pickupTime: String(f.get('pickupTime') || ''), hp: String(f.get('website') || ''), remember: f.get('remember') === 'on', payment: String(f.get('payment') || '').trim(), note: String(f.get('note') || '').trim() };
@@ -631,7 +721,7 @@ async function submitOrder(form) {
   const pr = pricing({ delivery: c.delivery, zone: c.zone }), sh = pr.sh;
   const order = {
     customer: c,
-    items: lines.map(({ p, qty, label }) => ({ id: p.id, name: p.name + (label ? ' (' + label + ')' : ''), price: p.price, qty })),
+    items: lines.map(({ p, qty, label }) => ({ id: p.id, name: p.name + (label ? ' (' + label + ')' : ''), price: p.price, qty, ...(label ? { vk: vkOf(label) } : {}) })),
     itemCount: lines.reduce((a, l) => a + l.qty, 0),
     shipping: sh.cost,
     total: pr.total
@@ -642,7 +732,7 @@ async function submitOrder(form) {
   const sig = JSON.stringify([order.items.map(i => i.id + ':' + i.qty).sort(), digits(c.phone)]);
   const last = lsGet('nodo_last');
   const finish = (code, dup) => { state.sending = false; state.cart = {}; state.coupon = ''; saveCart(); state.form = null;
-    lsSet('nodo_cust', remember ? { name: c.name, phone: c.phone, address: c.address || '', zone: c.zone || '', delivery: c.delivery } : null); state.doneCode = code; state.donePay = c.payment || ''; state.dupNote = !!dup; state.cartStep = 'done'; renderCartBadge(); renderCart(); };
+    lsSet('nodo_cust', remember ? { name: c.name, phone: c.phone, address: c.address || '', zone: c.zone || '', delivery: c.delivery } : null); state.doneCode = code; state.donePay = c.payment || ''; state.doneTotal = order.total; state.mpErr = ''; state.dupNote = !!dup; state.cartStep = 'done'; renderCartBadge(); renderCart(); };
   if (last && last.sig === sig && Date.now() - last.at < 180000) return finish(last.code, true);
   // Campo trampa que las personas no ven: si viene completo es un robot
   if (hp) { state.sending = true; renderCart(); await sleep(800); return finish('P-' + Math.random().toString(36).toUpperCase().slice(2, 9)); }
@@ -664,12 +754,31 @@ async function submitOrder(form) {
   }
 }
 
+/* ───────── Mercado Pago ───────── */
+function mpBox() {
+  const s = state.settings, tot = state.doneTotal != null ? ` por <b>${money(state.doneTotal)}</b>` : '';
+  if (s.mpMode === 'link') return `<div class="xfer"><b>Pagá con Mercado Pago</b><p>Abrí el link, pagá${tot} y mandanos el comprobante por WhatsApp con tu código <b>${esc(state.doneCode)}</b>.</p><p><a class="btn btn-primary btn-sm" target="_blank" rel="noopener" href="${esc(s.mpLink)}">Pagar con Mercado Pago</a></p></div>`;
+  return `<div class="xfer"><b>Pagá con Mercado Pago</b><p>Pagá${tot} con tarjeta, dinero en cuenta o efectivo. Se acredita solo.</p><p><button type="button" class="btn btn-primary btn-sm" data-act="mpPay">Pagar ahora</button></p>${state.mpErr ? `<p class="err" role="alert">${esc(state.mpErr)}</p>` : ''}</div>`;
+}
+async function mpPay(btn) {
+  btn.disabled = true; btn.textContent = 'Abriendo Mercado Pago…'; state.mpErr = '';
+  try {
+    const code = btn.dataset.code || state.doneCode, r = await fetch(state.settings.mpUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, back: location.origin + location.pathname }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !/^https:\/\/[^ ]*mercadopago[^ ]*/i.test(j.url || '')) throw new Error(j.error || 'No se pudo iniciar el pago.');
+    location.href = j.url;
+  } catch (e) { console.error(e); const m = 'No pudimos abrir Mercado Pago. Escribinos por WhatsApp y te pasamos otra forma de pago.'; if (btn.dataset.code) { state.track.payErr = m; render(); } else { state.mpErr = m; renderCart(); } }
+}
+
 /* ───────── Eventos ───────── */
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-act]');
   if (t) {
     const id = t.dataset.id, a = t.dataset.act;
-    if (a === 'open') openProduct(id);
+    if (a === 'mpPay') mpPay(t);
+    else if (a === 'revSend') sendReview(t);
+    else if (a === 'revPage') { const pid = t.dataset.pid, ui = state.revUi[pid]; ui.page = Math.max(0, +t.dataset.i); ui.open = true; const sec = $('#dlgProduct #revs'), p = state.products.concat(SAMPLE).find(x => x.id === pid); if (sec && p) { sec.outerHTML = reviewsSection(p); const n = $('#dlgProduct #revs'); n && n.scrollIntoView({ block: 'nearest' }); } }
+    else if (a === 'open') openProduct(id);
     else if (a === 'add') { const p = activeProducts().find(x => x.id === id); if (p && prodVariants(p).length) openProduct(id); else addToCart(id); }
     else if (a === 'hero') setHero(+t.dataset.i);
     else if (a === 'page') { state.page = +t.dataset.i; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
@@ -688,7 +797,9 @@ document.addEventListener('click', e => {
     else if (a === 'pdAdd') {
       const parts = [];
       for (const g of $$('#dlgProduct .vgrp')) { const c = $('input:checked', g); if (!c) return toast(`Elegí ${g.dataset.g.toLowerCase()} antes de agregar.`, { bad: true }); parts.push(g.dataset.g + ': ' + c.value); }
-      addToCart(lineKey(id, parts.join(' · ')), pdQty); $('#dlgProduct').close();
+      const lbl = parts.join(' · '), pp = state.products.find(x => x.id === id);
+      if (vStockOf(pp, lbl) <= 0) return toast('Esa combinación está agotada. Probá con otra opción.', { bad: true });
+      addToCart(lineKey(id, lbl), Math.min(pdQty, vStockOf(pp, lbl))); $('#dlgProduct').close();
     }
     else if (a === 'lineMinus') setQty(id, (state.cart[id] || 0) - 1);
     else if (a === 'linePlus') setQty(id, (state.cart[id] || 0) + 1);
@@ -710,6 +821,7 @@ document.addEventListener('change', e => {
   if (a === 'sort') { state.sort = t.value; render(); }
   else if (a === 'onlyOffers') { state.onlyOffers = t.checked; render(); }
   else if (a === 'inStock') { state.inStock = t.checked; render(); }
+  else if (t.closest?.('#dlgProduct .vgrp')) refreshVOpts();
   else if ((t.name === 'delivery' || t.name === 'zone') && t.closest('#checkoutForm')) updateCheckout(t.closest('form'));
   else if (a?.startsWith('adm')) adminChange(a, t);
 });
@@ -741,6 +853,7 @@ function loadPublic() {
   DB.subscribe('products', l => { state.products = l; state.loaded.products = true; state.fsError = false; softRender(); }, bad);
   DB.subscribe('categories', l => { state.catDocs = l; applyCats(l); state.loaded.cats = true; softRender(); }, () => { state.loaded.cats = true; });
   DB.subscribe('banners', l => { state.banners = l; state.loaded.banners = true; softRender(); });
+  DB.subscribe('reviewsPublic', l => { state.reviews = l; softRender(); refreshReviews(); }, () => { state.reviews = []; });
   DB.subscribe('settings', l => {
     const s = l.find(x => x.id === 'store');
     state.settings = { ...DEFAULT_SETTINGS, ...(s || {}) };
@@ -765,6 +878,8 @@ function loadOrders() {
     if (!first && l.length > state.orders.length) toast('Llegó un pedido nuevo', { label: 'Ver', fn: () => { state.admin.tab = 'orders'; location.hash = '#/admin'; render(); } });
     first = false; state.orders = l; softRender();
   });
+  state.revUnsub && state.revUnsub();
+  state.revUnsub = DB.subscribe('reviews', l => { state.reviewsAll = l; softRender(); }, () => { /* sin permiso */ });
   state.adminsUnsub && state.adminsUnsub();
   state.adminsUnsub = DB.subscribe('admins', l => { state.admins = l; if (state.admin.tab === 'admins') softRender(); }, () => { /* sin permiso: no es admin */ });
 }
@@ -811,7 +926,7 @@ if (window.NEGOCIO && window.NEGOCIO.demo) { // cinta de demostración (solo en 
   loadPublic();
   DB.auth.onChange(u => {
     state.user = u; state.authReady = true;
-    if (u) loadOrders(); else { state.ordersUnsub && state.ordersUnsub(); state.ordersUnsub = null; state.orders = []; state.adminsUnsub && state.adminsUnsub(); state.adminsUnsub = null; state.admins = []; }
+    if (u) loadOrders(); else { state.ordersUnsub && state.ordersUnsub(); state.ordersUnsub = null; state.orders = []; state.adminsUnsub && state.adminsUnsub(); state.adminsUnsub = null; state.admins = []; state.revUnsub && state.revUnsub(); state.revUnsub = null; state.reviewsAll = []; }
     if (state.route.name === 'admin') render();
   });
 })();

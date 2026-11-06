@@ -95,3 +95,16 @@ function imgOf(p) {
   const c = catById(p.category);
   return artUri(p.art || c.art, c.acc);
 }
+
+/* Aplica un movimiento de stock (sign=-1 descuenta, +1 devuelve) a un producto, respetando el stock por variante. Devuelve los campos a guardar o null. */
+function stockPatch(p, items, sign) {
+  if (!p || p.stock === null || p.stock === undefined) return null;
+  const mine = items.filter(i => i.id === p.id), q = mine.reduce((t, i) => t + Number(i.qty || 0), 0);
+  if (!q) return null;
+  if (p.vstock && typeof p.vstock === 'object' && Object.keys(p.vstock).length) {
+    const vs = { ...p.vstock };
+    for (const i of mine) if (i.vk && i.vk in vs) vs[i.vk] = Math.max(0, Number(vs[i.vk] || 0) + sign * Number(i.qty || 0));
+    return { vstock: vs, stock: Object.values(vs).reduce((t, n) => t + (Number(n) || 0), 0) };
+  }
+  return { stock: Math.max(0, Number(p.stock) + sign * q) };
+}

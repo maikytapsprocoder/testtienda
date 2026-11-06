@@ -154,3 +154,42 @@ Productos > "Importar / exportar": descargá la plantilla CSV, completala en Exc
 - **Usuarios (varios administradores)**: pestaña Usuarios. Requiere habilitar Email/Contraseña en Firebase Auth y republicar `firestore.rules`.
 - **Imágenes con Cloudinary** (alternativa gratis a Firebase Storage): Ajustes → completar `cloudName` y `cloudPreset` (preset "unsigned").
 - **Versión demo**: `node scripts/make-demo.js` genera `demo/` con cartel de vista previa, para mostrar a clientes.
+
+## Stock por variante
+En el formulario del producto, después de cargar las variantes, usá **"Generar combinaciones"** y poné la cantidad de cada una (ej. `M / Negro: 3`). El stock total se calcula solo, las combinaciones agotadas se tachan en la ficha y el pedido descuenta (y al cancelar devuelve) stock de la combinación elegida. También se puede importar con la columna `stock_variantes` del CSV.
+
+## Pago online con Mercado Pago
+Hay dos modos (Ajustes → Mercado Pago):
+1. **Link de pago fijo** (sin servidor): pegás tu link `mpago.la/…`; el cliente paga y te manda el comprobante.
+2. **Checkout automático** (requiere plan Blaze de Firebase): el cliente paga el total exacto de su pedido y el pedido queda marcado **Pagado** solo.
+   - Sacá tu *Access Token* de producción en mercadopago.com.uy → Tu negocio → Configuración → Credenciales.
+   - `cd functions && npm install && firebase functions:secrets:set MP_ACCESS_TOKEN` y después `firebase deploy --only functions`.
+   - Copiá la URL de la función `createMpPayment` que muestra el deploy y pegala en Ajustes ("URL de la función").
+   - El aviso de pago llega a `mpWebhook` (se configura solo en cada pago). El servidor consulta el pago a Mercado Pago y verifica monto y pedido antes de marcarlo pagado.
+   - Probalo primero con las credenciales de prueba de Mercado Pago.
+
+## Opiniones de clientes
+Los clientes dejan puntaje (1–5) y comentario en la ficha del producto, en un apartado desplegable con resumen de estrellas, distribución y páginas de 4 opiniones. Las opiniones quedan **pendientes** y solo se publican cuando las aprobás en el panel → Opiniones (también podés ocultarlas o eliminarlas). Se pueden desactivar en Ajustes. Hay que **republicar `firestore.rules`** (colección `reviews`). Sin verificación de compra: la moderación es la protección contra spam.
+
+## Códigos de barras
+- **Cargar el código**: en el producto, campo "Código de barras" (escribilo, escanealo con la cámara o con un lector USB). Si el producto no trae código, **Generar** crea uno interno único. El sistema avisa si el dígito verificador de un EAN/UPC está mal o si el código ya lo usa otro producto.
+- **Panel → Productos → Escanear**: tres modos. *Buscar / editar* (abre el producto o propone crearlo si el código es nuevo), *Sumar stock* (llegó mercadería) y *Restar stock* (venta en mostrador), con cantidad. Sigue leyendo uno tras otro y deja un registro. Con un lector USB también funciona sin abrir nada: escaneás en cualquier pantalla del panel y se abre el producto.
+- **Etiquetas**: Panel → Productos → Etiquetas. Elegí productos y cantidad, tamaño (rollo 50×30, rollo 70×40 o hoja A4) e imprimí. "Generar códigos internos" completa los que no tienen. Los códigos son EAN-13/EAN-8/UPC-A (si el código es válido) o Code 128 (cualquier otro).
+- **Tienda**: el cliente puede escribir el código en el buscador o tocar el ícono de escaneo (cámara) para abrir un producto. Un lector USB también abre el producto.
+- **Importar/exportar**: columna `codigo_barras`; al importar, los productos se emparejan primero por código y después por nombre.
+- La cámara solo funciona con la tienda publicada en **https** (GitHub Pages sirve). Usa el lector nativo del navegador y, si no existe (Firefox, Safari antiguo), descarga la librería ZXing automáticamente. Los lectores USB/Bluetooth que emulan teclado funcionan sin configurar nada.
+
+## Panel de ventas
+Panel → Resumen: elegí el período (7/30/90 días, 12 meses, todo o fechas a medida). Muestra ventas, pedidos, ticket promedio, cobrado/por cobrar y comparación con el período anterior; gráfico de ventas por día/semana/mes; productos y categorías que más venden; medios de pago; retiro vs. envío; estados; días de la semana y stock bajo.
+
+## Seguimiento de pedido (cliente)
+`#/pedido/CÓDIGO`: pasos con fecha (Recibido → En preparación → Listo/En camino → Entregado), historial, mensaje de la tienda, productos y totales, estado del pago (pagado, reembolsado, saldo) y botón para pagar el saldo con Mercado Pago. No muestra nombre, teléfono ni dirección. En el panel, al abrir un pedido podés escribir un **mensaje para el cliente** y registrar **cobros manuales** (efectivo/transferencia, parciales o totales).
+
+## Opiniones solo de compradores
+Ajustes → Opiniones → "Solo compradores": el cliente debe poner el código de un pedido que ya marcaste **Entregado** y que contenga ese producto (lo verifican las reglas de Firestore, no solo la página). Una opinión por pedido y producto, con insignia "Compra verificada". En modo abierto, el código es opcional y da la insignia. **Republicá `firestore.rules`.**
+
+## Mercado Pago: seña, pagos parciales y reembolsos
+- **Seña**: Ajustes → "Seña %" (ej. 30). El primer pago online cobra ese porcentaje; el cliente paga el saldo desde su seguimiento (o vos lo cobrás al entregar y lo registrás en el pedido).
+- Los pagos se acumulan por pedido (varios pagos, avisos repetidos no duplican). El pedido queda "Pagado" cuando lo cobrado menos lo reembolsado cubre el total.
+- **Reembolsos**: en el pedido, junto a cada pago de Mercado Pago, monto (vacío = completo) y "Reembolsar". Usa la función `mpRefund`, que verifica que quien la llama sea administrador. Los reembolsos hechos desde el sitio de Mercado Pago también se sincronizan.
+- Deploy: `firebase deploy --only functions` (funciones nuevas: `mpRefund`; si usás otros administradores, definí `ADMIN_EMAILS` con sus emails separados por coma). La URL de `mpRefund` se deduce de la de `createMpPayment`, o pegala en Ajustes.
