@@ -1,4 +1,5 @@
 # Nodo Tecno · tienda de tecnología con Firebase
+> Instalación completa paso a paso: ver `GUIA-INSTALACION.md`.
 
 Tienda web con secciones de **Periféricos, Teléfonos, Electrodomésticos y PCs/componentes**, carrito con totales automáticos, pedidos guardados en Firebase, **aviso por WhatsApp sin que el cliente vea el número** y panel de administración para editar productos, precios, ofertas e imágenes.
 
@@ -193,3 +194,24 @@ Ajustes → Opiniones → "Solo compradores": el cliente debe poner el código d
 - Los pagos se acumulan por pedido (varios pagos, avisos repetidos no duplican). El pedido queda "Pagado" cuando lo cobrado menos lo reembolsado cubre el total.
 - **Reembolsos**: en el pedido, junto a cada pago de Mercado Pago, monto (vacío = completo) y "Reembolsar". Usa la función `mpRefund`, que verifica que quien la llama sea administrador. Los reembolsos hechos desde el sitio de Mercado Pago también se sincronizan.
 - Deploy: `firebase deploy --only functions` (funciones nuevas: `mpRefund`; si usás otros administradores, definí `ADMIN_EMAILS` con sus emails separados por coma). La URL de `mpRefund` se deduce de la de `createMpPayment`, o pegala en Ajustes.
+
+## Funciones de tienda semi‑profesional (última tanda)
+
+- **Respaldo y restauración**: Panel → Ajustes → *Descargar respaldo* (JSON con categorías, productos, banners, pedidos, ajustes) y *Restaurar*. Hacelo seguido.
+- **Seguridad del panel**: aviso si seguís con la clave `123456` (Firebase), bloqueo tras 5 intentos fallidos, cambio de clave en Ajustes. Si perdés la clave: Firebase Console → Authentication → restablecer.
+- **Textos legales**: Términos y Privacidad vienen adaptados a Uruguay (Ley 17.250 / 18.331) con `[placeholders]`. Completalos y que un profesional los revise.
+- **Aviso al cliente por cambio de estado**: email opcional del cliente en el checkout + plantilla EmailJS extra (Ajustes → `emailStatusTemplateId`); además mensaje listo para WhatsApp.
+- **Pedidos**: filtros (texto/estado/etiqueta/pago), etiquetas, nota interna, transportista + nº de guía (el cliente lo ve en el seguimiento), botón Imprimir.
+- **SEO**: datos estructurados (JSON‑LD) y meta por producto. Para páginas por producto, sitemap y robots: descargá un respaldo y corré `node scripts/make-seo.js respaldo.json https://tu-sitio/` (volvé a correrlo si cambia el catálogo). Configurá `siteUrl` en Ajustes.
+- **Analytics / Pixel**: ID de Google Analytics y de Meta Pixel en Ajustes (respeta “No rastrear”). Eventos: ver producto, agregar al carrito, compra. *Feed Meta*: Ajustes → descargar CSV de catálogo para Facebook/Instagram.
+- **Más vendidos**, **recordatorio de carrito pendiente**, **lista de espera** (“avisame cuando vuelva”; el admin ve los anotados y los contacta por WhatsApp/mail), **filtros de precio y marca**.
+- **Caja (POS)**: Productos → *Caja*: lector USB/cámara/nombre, registra venta entregada y pagada y descuenta stock.
+- **Reglas Firestore**: republicá `firestore.rules` (waitlist, reseñas, email del cliente).
+
+**No incluido**: cuentas de cliente, factura electrónica DGI (requiere proveedor externo), multi‑idioma/moneda (excluido), cobro automático de Mercado Pago sin Blaze (haría falta un Worker de Cloudflare).
+
+## Fotos
+Subida con reducción automática (WebP). Con Cloudinary se sirven en tamaño chico y formato moderno. Ajustes → *Optimizar fotos guardadas* recomprime las pesadas. Tarjetas con carga diferida y tamaño fijo.
+
+## Pedidos cancelados (papelera)
+Al pasar un pedido a *Cancelado* sale de la lista y va a **Pedidos → Cancelados / papelera** (el stock se devuelve solo y no cuenta en ventas). Desde ahí se puede **Restaurar**, **Eliminar** definitivamente o **Vaciar papelera**. Los administradores ya no se gestionan desde el panel (se hace en Firebase Console).

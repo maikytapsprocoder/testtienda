@@ -183,6 +183,7 @@ function addToCart(key, n = 1) {
   const [pid] = splitKey(key);
   const p = activeProducts().find(x => x.id === pid);
   if (!p || isCatalog(p)) return;
+  trackEvt('add_to_cart', p, n);
   if (stockOf(p) <= 0) return toast('Este producto no tiene stock.', { bad: true });
   if (setQty(key, (state.cart[key] || 0) + n)) return;
   const b = $('#cartBtn'); b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump');
@@ -299,7 +300,7 @@ function parseHash() {
   return { name: 'home' };
 }
 window.addEventListener('hashchange', () => {
-  state.route = parseHash(); state.sub = ''; state.q = ''; state.sort = 'rel'; state.onlyOffers = false; state.inStock = false; state.deepDone = ''; state.track.auto = null;
+  state.route = parseHash(); state.sub = ''; state.q = ''; state.sort = 'rel'; state.onlyOffers = false; state.inStock = false; state.pmin = 0; state.pmax = 0; state.brand = ''; state.deepDone = ''; state.track.auto = null;
   $('#q').value = ''; hideSugg();
   if ($('#dlgProduct').open) $('#dlgProduct').close();
   render(); window.scrollTo(0, 0);
@@ -310,7 +311,7 @@ function card(p) {
   const offer = onOffer(p), out = stockOf(p) <= 0, c = catOf(p);
   return `<article class="card ${out ? 'is-out' : ''}">${heartBtn(p)}
     <button type="button" class="card-img" data-act="open" data-id="${esc(p.id)}" style="--tint:${c.tint}" aria-label="Ver ${esc(p.name)}">
-      <img loading="lazy" src="${esc(imgOf(p))}" alt="" class="${(p.images && p.images[0]) || p.image ? 'photo' : ''}">
+      <img loading="lazy" decoding="async" width="400" height="400" src="${esc(optImg(imgOf(p), 500))}" alt="" class="${(p.images && p.images[0]) || p.image ? 'photo' : ''}">
       ${offer && !priceHidden(p) ? `<span class="tag">-${pct(p)}%</span>` : ''}${out && !isCatalog(p) ? '<span class="out">Sin stock</span>' : ''}
     </button>
     <div class="card-b">
@@ -381,7 +382,9 @@ function storeHome() {
     if (c.image) return `<a class="tile has-img" href="#/c/${esc(k)}" style="--tint:${c.tint}"><img src="${esc(c.image)}" alt="" loading="lazy"><h3>${esc(c.name)}</h3><span class="sr">${n} productos</span></a>`;
     return `<a class="tile" href="#/c/${esc(k)}" style="--tint:${c.tint}"><h3>${esc(c.name)}</h3><p>${esc(c.blurb)}</p><img src="${esc(artUri(c.art, c.acc))}" alt=""><span class="sr">${n} productos</span></a>`;
   }).join('');
-  let html = heroHTML() + `<section class="sec wrap"><div class="sec-h"><h2>Categorías destacadas</h2></div><div class="tiles">${tiles}</div></section>`;
+  let html = heroHTML() + cartNudge() + `<section class="sec wrap"><div class="sec-h"><h2>Categorías destacadas</h2></div><div class="tiles">${tiles}</div></section>`;
+  const best = ps.filter(p => Number(p.sold) > 0 && stockOf(p) > 0).sort((a, b) => b.sold - a.sold).slice(0, 4);
+  if (best.length >= 3) html += `<section class="sec wrap"><div class="sec-h"><h2>Los más vendidos</h2></div><div class="grid">${best.map(card).join('')}</div></section>`;
   if (offers.length) html += `<section class="sec wrap"><div class="sec-h"><h2>Productos en oferta</h2><span class="rail-nav"><button type="button" class="btn btn-line btn-sm" data-act="railPrev" aria-label="Anteriores">‹</button><button type="button" class="btn btn-line btn-sm" data-act="railNext" aria-label="Siguientes">›</button><a href="#/ofertas">Ver todas</a></span></div><div class="grid rail" id="rail">${offers.map(card).join('')}</div></section>`;
   for (const [k, c] of Object.entries(CATS)) {
     const l = sortList(ps.filter(p => p.category === k)).slice(0, 4);
@@ -402,9 +405,13 @@ function listing({ title, crumb, list, subs, relevance }) {
   let l = list;
   if (state.sub) l = l.filter(p => p.sub === state.sub);
   if (state.onlyOffers) l = l.filter(onOffer);
+  const brands = [...new Set(list.map(p => p.brand).filter(Boolean))].sort();
   if (state.inStock) l = l.filter(p => stockOf(p) > 0);
+  if (state.brand) l = l.filter(p => p.brand === state.brand);
+  if (state.pmin) l = l.filter(p => Number(p.price) >= state.pmin);
+  if (state.pmax) l = l.filter(p => Number(p.price) <= state.pmax);
   l = sortList(l, relevance);
-  const sig = [state.route.name, state.route.cat || '', state.q, state.sub, state.onlyOffers, state.inStock, state.sort].join('|');
+  const sig = [state.route.name, state.route.cat || '', state.q, state.sub, state.onlyOffers, state.inStock, state.sort, state.pmin, state.pmax, state.brand].join('|');
   if (state.pageSig !== sig) { state.pageSig = sig; state.page = 1; }
   const pages = Math.max(1, Math.ceil(l.length / PAGE_SIZE)); state.page = Math.min(Math.max(1, state.page || 1), pages);
   const shown = l.slice((state.page - 1) * PAGE_SIZE, state.page * PAGE_SIZE);
@@ -413,6 +420,8 @@ function listing({ title, crumb, list, subs, relevance }) {
   const tb = `<div class="toolbar"><span class="count" aria-live="polite">${l.length} ${l.length === 1 ? 'producto' : 'productos'}</span>
     <label><input type="checkbox" data-act="onlyOffers" ${state.onlyOffers ? 'checked' : ''}> Solo ofertas</label>
     <label><input type="checkbox" data-act="inStock" ${state.inStock ? 'checked' : ''}> Con stock</label>
+    ${brands.length > 1 ? `<label>Marca <select data-act="brand"><option value="">Todas</option>${brands.map(b => `<option ${state.brand === b ? 'selected' : ''}>${esc(b)}</option>`).join('')}</select></label>` : ''}
+    <label class="pr">Precio <input type="number" min="0" inputmode="numeric" data-act="pmin" placeholder="Mín." value="${state.pmin || ''}" aria-label="Precio mínimo"> – <input type="number" min="0" inputmode="numeric" data-act="pmax" placeholder="Máx." value="${state.pmax || ''}" aria-label="Precio máximo"></label>
     <label>Ordenar <select data-act="sort">${[['rel', 'Más nuevos'], ['asc', 'Menor precio'], ['desc', 'Mayor precio'], ['disc', 'Mayor descuento'], ['az', 'A a Z']].map(([v, t]) => `<option value="${v}" ${state.sort === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label></div>`;
   const body = !state.loaded.products ? skeletons(8)
     : l.length ? `<div class="grid">${shown.map(card).join('')}</div>${pager}`
@@ -449,6 +458,7 @@ function trackPage() {
     body = `<div class="trk">
       <div class="trk-h"><div><small class="muted">Pedido</small><b class="code">${esc(t.code)}</b></div><div class="muted">${r.createdAt ? esc(fmtDate(r.createdAt)) + ' · ' : ''}${r.delivery === 'envio' ? 'Envío' + (r.zone ? ' a ' + esc(r.zone) : '') : 'Retiro en el local'}</div></div>
       ${cancelled ? '<p class="chipst bad" style="margin:14px 0">Pedido cancelado</p>' : `<ol class="steps tl" aria-label="Estado del pedido">${steps.map(([k, l], i) => `<li class="${i < idx ? 'done' : i === idx ? 'now' : ''}" ${i === idx ? 'aria-current="step"' : ''}><i aria-hidden="true">${i < idx ? '✓' : i + 1}</i><span>${l}</span><small>${esc(when(k))}</small></li>`).join('')}</ol>`}
+      ${r.carrier || r.trackNo ? `<div class="trk-note"><b>Envío</b><p>${r.carrier ? esc(r.carrier) : ''}${r.trackNo ? ' · Guía N° <b>' + esc(r.trackNo) + '</b>' : ''}</p></div>` : ''}
       ${r.note ? `<div class="trk-note"><b>Mensaje de la tienda</b><p>${esc(r.note).replace(/\n/g, '<br>')}</p></div>` : ''}
       ${hist.length > 1 ? `<details class="trk-hist"><summary>Historial</summary><ul class="plain">${[...hist].reverse().map(h => `<li><span>${esc(STATUS_LBL[h.s] || h.s)}</span><small class="muted">${esc(fmtDate(h.t))}</small></li>`).join('')}</ul></details>` : ''}
       ${items.length ? `<div class="panel trk-box"><h3>Tu compra</h3><ul class="plain">${items.map(i => `<li><span>${esc(i.q)} × ${esc(i.n)}</span><b>${money((Number(i.p) || 0) * (Number(i.q) || 0))}</b></li>`).join('')}</ul>
@@ -504,7 +514,7 @@ function showSugg() {
   if (!q || state.route.name === 'admin') return hideSugg();
   const res = searchProducts(q, activeProducts()).slice(0, 6);
   if (!res.length) { u.innerHTML = `<li class="sugg-none">No encontramos “${esc(q)}”. Probá con otra palabra.</li>`; u.hidden = false; return; }
-  u.innerHTML = res.map(p => `<li><button type="button" data-act="sugg" data-id="${esc(p.id)}"><img src="${esc(imgOf(p))}" alt=""><span class="sg-t">${esc(p.name)}</span><span class="sg-p">${isCatalog(p) ? (priceHidden(p) ? "Consultar" : money(p.price)) : stockOf(p) <= 0 ? "Sin stock" : money(p.price)}</span></button></li>`).join('');
+  u.innerHTML = res.map(p => `<li><button type="button" data-act="sugg" data-id="${esc(p.id)}"><img decoding="async" src="${esc(optImg(imgOf(p), 120))}" alt=""><span class="sg-t">${esc(p.name)}</span><span class="sg-p">${isCatalog(p) ? (priceHidden(p) ? "Consultar" : money(p.price)) : stockOf(p) <= 0 ? "Sin stock" : money(p.price)}</span></button></li>`).join('');
   u.hidden = false;
 }
 
@@ -573,13 +583,13 @@ function refreshVOpts() {
     inp.closest('label').classList.toggle('vout', !ok);
   }));
 }
-const productImages = p => { const l = Array.isArray(p.images) && p.images.length ? p.images : (p.image ? [p.image] : []); return l.length ? l : [imgOf(p)]; };
+const productImages = p => { const l = Array.isArray(p.images) && p.images.length ? p.images : (p.image ? [p.image] : []); return (l.length ? l : [imgOf(p)]).map(u => optImg(u, 1000)); };
 function openProduct(id) {
   const p = activeProducts().find(x => x.id === id);
   if (!p) return;
   pdQty = 1;
   const c = catOf(p), st = stockOf(p), offer = onOffer(p), imgs = productImages(p);
-  const stock = st <= 0 ? `<p class="stock none">Sin stock por el momento</p>${contactNum() ? `<p><a class="btn btn-line btn-sm" target="_blank" rel="noopener" href="${waLink('Hola, quiero consultar cuándo vuelve a haber stock de: ' + p.name)}">Consultar disponibilidad por WhatsApp</a></p>` : ''}` : st <= 5 ? `<p class="stock low">Quedan ${st} unidades</p>` : '<p class="stock">Disponible</p>';
+  const stock = st <= 0 ? `<p class="stock none">Sin stock por el momento</p>${contactNum() ? `<p><a class="btn btn-line btn-sm" target="_blank" rel="noopener" href="${waLink('Hola, quiero consultar cuándo vuelve a haber stock de: ' + p.name)}">Consultar disponibilidad por WhatsApp</a></p>` : ''}${waitForm(p)}` : st <= 5 ? `<p class="stock low">Quedan ${st} unidades</p>` : '<p class="stock">Disponible</p>';
   const specs = String(p.specs || '').split('\n').map(s => s.trim()).filter(Boolean);
   $('#dlgProduct').innerHTML = `<button type="button" class="dlg-x" data-act="closeDlg" aria-label="Cerrar">×</button>
     <div class="pd"><div class="pd-img ${st <= 0 ? 'is-out' : ''}" style="--tint:${c.tint}">${heartBtn(p)}<img id="pdMain" src="${esc(imgs[0])}" alt="${esc(p.name)}">${offer ? `<span class="tag">-${pct(p)}%</span>` : ''}
@@ -593,21 +603,23 @@ function openProduct(id) {
       <button type="button" class="btn btn-primary" data-act="pdAdd" data-id="${esc(p.id)}" ${st <= 0 ? 'disabled' : ''}>Agregar al carrito</button></div>`}
       <button type="button" class="btn btn-line btn-sm share" data-act="share" data-id="${esc(p.id)}">Compartir este producto</button></div></div>
     ${reviewsSection(p)}
-    ${(() => { const rel = activeProducts().filter(x => x.id !== p.id && x.category === p.category).sort((a, b) => (stockOf(a) <= 0) - (stockOf(b) <= 0)).slice(0, 4); return rel.length ? `<section class="related"><h3>También te puede interesar</h3><div class="rel-grid">${rel.map(x => `<button type="button" class="rel" data-act="open" data-id="${esc(x.id)}"><img loading="lazy" src="${esc(imgOf(x))}" alt=""><span>${esc(x.name)}</span><b>${priceHidden(x) ? 'Consultar' : money(x.price)}</b></button>`).join('')}</div></section>` : ''; })()}`;
+    ${(() => { const rel = activeProducts().filter(x => x.id !== p.id && x.category === p.category).sort((a, b) => (stockOf(a) <= 0) - (stockOf(b) <= 0)).slice(0, 4); return rel.length ? `<section class="related"><h3>También te puede interesar</h3><div class="rel-grid">${rel.map(x => `<button type="button" class="rel" data-act="open" data-id="${esc(x.id)}"><img loading="lazy" decoding="async" width="200" height="200" src="${esc(optImg(imgOf(x), 300))}" alt=""><span>${esc(x.name)}</span><b>${priceHidden(x) ? 'Consultar' : money(x.price)}</b></button>`).join('')}</div></section>` : ''; })()}`;
   const d = $('#dlgProduct');
   if (!d.open) d.showModal();
   d.scrollTop = 0; refreshVOpts();
   document.title = `${p.name} · ${S().storeName}`;
   if (!location.hash.startsWith('#/p/')) state.prevHash = location.hash || '#/';
   try { history.replaceState(null, '', '#/p/' + encodeURIComponent(p.id)); } catch { /* file:// o iframe */ }
+  seoProduct(p); trackEvt('view_item', p);
 }
 $('#dlgProduct').addEventListener('close', () => {
+  seoReset();
   if (location.hash.startsWith('#/p/')) { try { history.replaceState(null, '', state.prevHash || '#/'); } catch { /* nada */ } }
   document.title = `${S().storeName} · ${S().tagline || 'Tecnología y electrodomésticos'}`;
 });
 async function shareProduct(id) {
   const p = state.products.concat(SAMPLE).find(x => x.id === id); if (!p) return;
-  const url = location.href.split('#')[0] + '#/p/' + encodeURIComponent(id);
+  const url = S().siteUrl ? S().siteUrl.replace(/\/?$/, '/') + 'p/' + encodeURIComponent(id) + '/' : location.href.split('#')[0] + '#/p/' + encodeURIComponent(id);
   try { if (navigator.share) { await navigator.share({ title: p.name, text: `${p.name} · ${S().storeName}`, url }); return; } }
   catch (e) { if (e && e.name === 'AbortError') return; }
   try { await navigator.clipboard.writeText(url); toast('Enlace copiado'); } catch { toast(url); }
@@ -631,6 +643,7 @@ function renderCart() {
     d.innerHTML = head('', true) + `<form id="checkoutForm" class="dr-body" style="padding-top:18px" novalidate>
       <h2 style="font:800 22px var(--font-d);margin-bottom:14px">Tus datos</h2>
       <div class="field"><label for="f-name">Nombre y apellido</label><input class="in" id="f-name" name="name" autocomplete="name" required value="${esc(v.name)}"></div>
+      <div class="field"><label for="f-mail">Correo (opcional)</label><input class="in" id="f-mail" name="email" type="email" autocomplete="email" maxlength="80" value="${esc(v.email || '')}"><small>Si lo ponés, te avisamos por correo cuando cambie el estado de tu pedido.</small></div>
       <div class="field"><label for="f-phone">Teléfono o WhatsApp</label><input class="in" id="f-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" required value="${esc(v.phone)}"><small>Te contactamos a este número para confirmar el pedido.</small></div>
       <div class="field"><span>¿Cómo lo recibís?</span><div class="radios"><label><input type="radio" name="delivery" value="retiro" ${v.delivery !== 'envio' ? 'checked' : ''}> Retiro en el local</label><label><input type="radio" name="delivery" value="envio" ${v.delivery === 'envio' ? 'checked' : ''}> Envío a domicilio</label></div></div>
       <div class="field" id="payBox">${payHTML(v.delivery === 'envio' ? 'envio' : 'retiro', v.payment)}</div>
@@ -683,7 +696,7 @@ const payList = delivery => [...payBase(delivery), ...(mpOn() ? [MP] : [])]; // 
 const payHTML = (delivery, sel) => { const l = [...payBase(delivery), MP]; return `<span>¿Cómo querés pagar?</span><div class="radios" role="radiogroup">${l.map(m => m === MP && !mpOn() ? `<label class="pay-off"><input type="radio" name="payment" value="${esc(m)}" disabled> ${esc(m)} <b>· No disponible</b></label>` : `<label><input type="radio" name="payment" value="${esc(m)}" ${sel === m ? 'checked' : ''}> ${esc(m)}</label>`).join('')}</div>`; };
 function readCheckout(form) {
   const f = new FormData(form);
-  return { name: String(f.get('name') || '').trim(), phone: String(f.get('phone') || '').trim(), delivery: f.get('delivery') === 'envio' ? 'envio' : 'retiro', address: String(f.get('address') || '').trim(), zone: String(f.get('zone') || ''), pickupDay: String(f.get('pickupDay') || ''), pickupTime: String(f.get('pickupTime') || ''), hp: String(f.get('website') || ''), remember: f.get('remember') === 'on', payment: String(f.get('payment') || '').trim(), note: String(f.get('note') || '').trim() };
+  return { email: String(f.get('email') || '').trim().slice(0, 80), name: String(f.get('name') || '').trim(), phone: String(f.get('phone') || '').trim(), delivery: f.get('delivery') === 'envio' ? 'envio' : 'retiro', address: String(f.get('address') || '').trim(), zone: String(f.get('zone') || ''), pickupDay: String(f.get('pickupDay') || ''), pickupTime: String(f.get('pickupTime') || ''), hp: String(f.get('website') || ''), remember: f.get('remember') === 'on', payment: String(f.get('payment') || '').trim(), note: String(f.get('note') || '').trim() };
 }
 function waText(order, code) {
   const l = order.items.map(i => `• ${i.qty} x ${i.name} — ${money(i.price * i.qty)}`).join('\n');
@@ -745,6 +758,7 @@ async function submitOrder(form) {
     const code = await DB.createOrder(order);
     lsSet('nodo_last', { sig, code, at: Date.now() });
     notifyEmail(order, code); // aviso por correo al dueño (si está configurado); no frena el pedido
+    trackEvt('purchase', { code, total: order.total, items: order.items });
     finish(code, false);
     if (win) win.location.href = `https://wa.me/${digits(state.settings.waNumber)}?text=${encodeURIComponent(waText(order, code))}`;
   } catch (e) {
@@ -790,7 +804,7 @@ document.addEventListener('click', e => {
     else if (a === 'fav') { toggleFav(id); }
     else if (a === 'sugg') { hideSugg(); $('#q').value = ''; state.q = ''; render(); openProduct(id); }
     else if (a === 'sub') { state.sub = t.dataset.v; render(); }
-    else if (a === 'clear') { state.sub = ''; state.onlyOffers = false; state.inStock = false; state.q = ''; $('#q').value = ''; render(); }
+    else if (a === 'clear') { state.sub = ''; state.onlyOffers = false; state.inStock = false; state.pmin = 0; state.pmax = 0; state.brand = ''; state.q = ''; $('#q').value = ''; render(); }
     else if (a === 'closeDlg') t.closest('dialog').close();
     else if (a === 'pdMinus') { pdQty = Math.max(1, pdQty - 1); $('#pdQ').textContent = pdQty; }
     else if (a === 'pdPlus') { const p = state.products.find(x => x.id === $('[data-act=pdAdd]').dataset.id); pdQty = Math.min(pdQty + 1, Math.min(stockOf(p), 99)); $('#pdQ').textContent = pdQty; }
@@ -821,6 +835,8 @@ document.addEventListener('change', e => {
   if (a === 'sort') { state.sort = t.value; render(); }
   else if (a === 'onlyOffers') { state.onlyOffers = t.checked; render(); }
   else if (a === 'inStock') { state.inStock = t.checked; render(); }
+  else if (a === 'brand') { state.brand = t.value; render(); }
+  else if (a === 'pmin' || a === 'pmax') { state[a] = Math.max(0, Number(t.value) || 0); render(); }
   else if (t.closest?.('#dlgProduct .vgrp')) refreshVOpts();
   else if ((t.name === 'delivery' || t.name === 'zone') && t.closest('#checkoutForm')) updateCheckout(t.closest('form'));
   else if (a?.startsWith('adm')) adminChange(a, t);
@@ -880,8 +896,9 @@ function loadOrders() {
   });
   state.revUnsub && state.revUnsub();
   state.revUnsub = DB.subscribe('reviews', l => { state.reviewsAll = l; softRender(); }, () => { /* sin permiso */ });
+  state.waitUnsub && state.waitUnsub();
+  state.waitUnsub = DB.subscribe('waitlist', l => { state.waitAll = l; softRender(); }, () => { /* sin permiso */ });
   state.adminsUnsub && state.adminsUnsub();
-  state.adminsUnsub = DB.subscribe('admins', l => { state.admins = l; if (state.admin.tab === 'admins') softRender(); }, () => { /* sin permiso: no es admin */ });
 }
 /* Re-render que no interrumpe a quien está escribiendo en el panel */
 let pendingRender = false;
@@ -926,7 +943,7 @@ if (window.NEGOCIO && window.NEGOCIO.demo) { // cinta de demostración (solo en 
   loadPublic();
   DB.auth.onChange(u => {
     state.user = u; state.authReady = true;
-    if (u) loadOrders(); else { state.ordersUnsub && state.ordersUnsub(); state.ordersUnsub = null; state.orders = []; state.adminsUnsub && state.adminsUnsub(); state.adminsUnsub = null; state.admins = []; state.revUnsub && state.revUnsub(); state.revUnsub = null; state.reviewsAll = []; }
+    if (u) loadOrders(); else { state.ordersUnsub && state.ordersUnsub(); state.ordersUnsub = null; state.orders = []; state.adminsUnsub && state.adminsUnsub(); state.adminsUnsub = null; state.admins = []; state.revUnsub && state.revUnsub(); state.revUnsub = null; state.reviewsAll = []; state.waitUnsub && state.waitUnsub(); state.waitUnsub = null; state.waitAll = []; }
     if (state.route.name === 'admin') render();
   });
 })();

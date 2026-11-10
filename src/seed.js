@@ -24,31 +24,53 @@ const DEFAULT_ZONES = [
   { name: 'Rivera', km: 405, cost: 500 }
 ];
 
-const DEFAULT_TERMS = `## Cómo comprar
-Armás tu carrito, confirmás el pedido con tus datos y el local se comunica con vos por WhatsApp para confirmar disponibilidad, medio de pago y entrega.
+const DEFAULT_TERMS = `## Quiénes somos
+[NOMBRE LEGAL DEL COMERCIO] · RUT [XXXXXXXXXXXX] · [Dirección], [Ciudad], Uruguay. Contacto: ver la página de Contacto.
+
+## Cómo comprar
+Armás tu carrito, confirmás el pedido con tus datos y el local se comunica con vos para confirmar disponibilidad, medio de pago y entrega. El pedido se considera aceptado cuando el local lo confirma.
 
 ## Precios y disponibilidad
-Los precios están en pesos uruguayos y pueden cambiar sin aviso. La disponibilidad se confirma al contactarte.
+Los precios están en pesos uruguayos e incluyen IVA salvo que se indique lo contrario. Pueden cambiar sin aviso; se respeta el precio vigente al confirmar el pedido. La disponibilidad se confirma al contactarte; si un producto no está disponible te avisamos y podés cambiarlo o cancelar sin costo.
+
+## Medios de pago
+Los medios habilitados se muestran al confirmar el pedido. En pagos por transferencia o Mercado Pago, el pedido se prepara una vez acreditado el pago.
 
 ## Entregas
 - Retiro en el local: sin costo.
-- Envío dentro de Mercedes: sin costo.
-- Otras localidades: el costo depende de la distancia y se muestra al elegir la localidad en el pedido.
+- Envíos: el costo y los plazos dependen de la localidad y se muestran al elegirla. Los plazos son estimados.
+- Revisá el paquete al recibirlo y avisanos de inmediato si llegó dañado.
 
-## Garantía, cambios y devoluciones
-Las condiciones de garantía, cambio y devolución dependen de cada producto. Consultalas en el local o por WhatsApp antes de comprar.`;
+## Cambios, devoluciones y garantía
+- Si el producto llegó con falla o no es lo que pediste, podés cambiarlo o pedir la devolución del dinero.
+- Compras a distancia (por internet o teléfono): tenés derecho a arrepentirte dentro de los 5 días corridos de recibido el producto, sin costo adicional más que el de devolverlo, siempre que esté sin uso y en su empaque original (Ley 17.250 de Relaciones de Consumo).
+- Garantía: los productos tienen la garantía legal y la del fabricante o importador. Conservá la factura o el comprobante.
+- Para hacer un reclamo escribinos con tu código de pedido.
 
-const DEFAULT_PRIVACY = `## Qué datos pedimos
-Al hacer un pedido te pedimos tu nombre, un teléfono de contacto y, si elegís envío, la dirección de entrega.
+## Reclamos
+Podés presentar reclamos ante el comercio por los medios de contacto, o ante el Área de Defensa del Consumidor del Ministerio de Economía y Finanzas.
+
+> Texto de ejemplo: completá los datos entre corchetes y hacelo revisar por un profesional antes de usarlo.`;
+
+const DEFAULT_PRIVACY = `## Responsable
+[NOMBRE LEGAL DEL COMERCIO] · RUT [XXXXXXXXXXXX]. Cumplimos la Ley 18.331 de Protección de Datos Personales.
+
+## Qué datos pedimos
+Al hacer un pedido te pedimos tu nombre, un teléfono de contacto, opcionalmente tu correo y, si elegís envío, la dirección de entrega. Si dejás una opinión, tu nombre y comentario.
 
 ## Para qué los usamos
-Solo para gestionar tu pedido y comunicarnos con vos. No vendemos ni cedemos tus datos a terceros.
+Solo para gestionar tu pedido, avisarte de su estado y atender reclamos. No vendemos ni cedemos tus datos a terceros, salvo los necesarios para cobrar (por ejemplo, Mercado Pago) o entregar tu pedido.
 
 ## Dónde se guardan
-Los pedidos se guardan en servicios de Google Firebase, con acceso restringido al personal del local.
+Los pedidos se guardan en servicios de Google Firebase, con acceso restringido al personal del local. Si usamos estadísticas o publicidad (Google Analytics, Meta), te lo informamos en este texto y podés bloquearlas desde tu navegador.
+
+## Cookies y almacenamiento local
+Usamos el almacenamiento de tu navegador para recordar tu carrito, tus favoritos y, si lo elegís, tus datos de contacto en ese dispositivo.
 
 ## Tus derechos
-Podés pedir ver, corregir o eliminar tus datos escribiéndonos por WhatsApp o al correo de contacto.`;
+Podés pedir acceso, rectificación o eliminación de tus datos escribiéndonos. También podés reclamar ante la Unidad Reguladora y de Control de Datos Personales (URCDP).
+
+> Texto de ejemplo: completá los datos entre corchetes y hacelo revisar por un profesional antes de usarlo.`;
 
 const DEFAULT_SERVICES = `## Servicios técnicos
 - Reparación de PC y notebooks
@@ -79,6 +101,10 @@ const DEFAULT_SETTINGS = {
   cloudPreset: '',
   transferInfo: '',
   reviewsMode: 'on',
+  gaId: '',
+  fbPixelId: '',
+  siteUrl: '',
+  emailStatusTemplateId: '',
   mpDeposit: 0,
   mpRefundUrl: '',
   mpMode: 'off', mpLink: '', mpUrl: '',

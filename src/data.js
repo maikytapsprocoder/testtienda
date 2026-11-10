@@ -71,12 +71,13 @@ function createDemoDB() {
       const list = read('orders');
       list.unshift({ id: 'o' + Date.now().toString(36), code, status: 'nuevo', createdAt: Date.now(), stockApplied: true, ...order });
       const prods = read('products');
-      for (const p of prods) { const pt = stockPatch(p, order.items || [], -1); if (pt) Object.assign(p, pt); }
+      for (const p of prods) { const pt = stockPatch(p, order.items || [], -1); if (pt) Object.assign(p, pt); const q = (order.items || []).filter(i => i.id === p.id).reduce((t, i) => t + (Number(i.qty) || 0), 0); if (q) p.sold = (Number(p.sold) || 0) + q; }
       lsSet(key('products'), prods); emit('products');
       lsSet(key('orders'), list); emit('orders');
       const st = read('orderStatus'); st.push({ id: code, ...publicStatus(order) }); lsSet(key('orderStatus'), st);
       return code;
     },
+    async createWait(w) { const l = lsGet(key('waitlist')) || []; l.push({ id: 'w' + Date.now().toString(36), ...w, createdAt: Date.now() }); lsSet(key('waitlist'), l); emit('waitlist'); },
     async createReview(r) {
       if (r.orderCode) { const st = read('orderStatus').find(x => x.id === r.orderCode); if (!st || st.status !== 'entregado' || !(st.pids || []).includes(r.productId)) throw new Error('not-buyer'); if ((lsGet(key('reviews')) || []).some(x => x.id === r.orderCode + '_' + r.productId)) throw new Error('dup'); r = { ...r, id: r.orderCode + '_' + r.productId, verified: true }; }
       const l = lsGet(key('reviews')) || []; l.push({ id: 'r' + Date.now().toString(36), ...r, status: 'pending', createdAt: Date.now() }); lsSet(key('reviews'), l); emit('reviews'); },
@@ -145,6 +146,7 @@ async function createFirebaseDB() {
       try { await fsM.setDoc(fsM.doc(fs, 'orderStatus', code), publicStatus(order)); } catch (e) { console.warn('orderStatus', e); }
       return code;
     },
+    async createWait(w) { await fsM.addDoc(fsM.collection(fs, 'waitlist'), { ...w, createdAt: fsM.serverTimestamp() }); },
     async createReview(r) {
       const data = { ...r, status: 'pending', createdAt: fsM.serverTimestamp() };
       if (r.orderCode) { data.verified = true; await fsM.setDoc(fsM.doc(fs, 'reviews', r.orderCode + '_' + r.productId), data); } // un id fijo por pedido+producto: no se repite

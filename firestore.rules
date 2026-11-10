@@ -19,7 +19,7 @@ service cloud.firestore {
         && d.status == 'nuevo'
         && d.createdAt == request.time
         && d.customer is map
-        && d.customer.keys().hasOnly(['name', 'phone', 'delivery', 'address', 'zone', 'pickup', 'payment', 'note'])
+        && d.customer.keys().hasOnly(['name', 'phone', 'delivery', 'address', 'zone', 'pickup', 'payment', 'note', 'email'])
         && d.customer.name is string && d.customer.name.size() > 0 && d.customer.name.size() <= 80
         && d.customer.phone is string && d.customer.phone.size() >= 7 && d.customer.phone.size() <= 30
         && d.customer.delivery in ['retiro', 'envio']
@@ -98,6 +98,15 @@ service cloud.firestore {
         && d.name is string && d.name.size() > 0 && d.name.size() <= 40
         && d.rating is int && d.rating >= 1 && d.rating <= 5
         && d.text is string && d.text.size() <= 600;
+    }
+
+    // Lista de espera de stock: cualquiera se anota; solo el admin lee y borra.
+    match /waitlist/{id} {
+      allow create: if request.resource.data.keys().hasOnly(['productId', 'contact', 'createdAt'])
+        && request.resource.data.productId is string && request.resource.data.productId.size() <= 100
+        && request.resource.data.contact is string && request.resource.data.contact.size() >= 6 && request.resource.data.contact.size() <= 80
+        && request.resource.data.createdAt == request.time;
+      allow read, update, delete: if isAdmin();
     }
 
     // Pedidos: cualquiera puede crear uno (con validación); solo admins los ven y cambian.

@@ -89,6 +89,8 @@ function artUri(key, accent) {
 }
 
 /* Imagen de un producto: foto propia (URL o subida) o ilustración según categoría */
+/* Cloudinary: pide una versión liviana (WebP/AVIF automático, ancho w). Otras fuentes quedan igual. */
+function optImg(u, w) { return (typeof u === 'string' && /^https:\/\/res\.cloudinary\.com\/.+\/image\/upload\/(?!.*(?:f_auto|w_\d))/.test(u)) ? u.replace('/image/upload/', `/image/upload/f_auto,q_auto,w_${w}/`) : u; }
 function imgOf(p) {
   const first = (Array.isArray(p.images) && p.images[0]) || p.image;
   if (first) return first;

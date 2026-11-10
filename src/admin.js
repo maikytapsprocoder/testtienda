@@ -10,7 +10,7 @@ function adminView() {
   const rules = state.fsError ? '<div class="wrap"><p class="err" role="alert" style="margin:12px 0">No se pueden leer los productos de Firestore. Casi seguro faltan publicar las reglas (Firebase > Firestore > Reglas). Mientras tanto la tienda muestra productos de ejemplo.</p></div>' : '';
   return `<div id="adminShell"><div class="adm-bar"><div class="wrap"><span class="logo"><span class="logo-mark"></span>${esc(state.settings.storeName)} · Administración</span>
     <nav><a class="btn" href="#/">Ver tienda</a><button type="button" class="btn" data-act="admLogout">Salir</button></nav></div></div>${rules}
-    <div class="wrap"><div class="tabs" role="tablist">${tab('summary', 'Resumen')}${tab('products', 'Productos')}${tab('categories', 'Categorías')}${tab('banners', 'Ofertas y banners')}${tab('orders', 'Pedidos', nuevos || '')}${tab('reviews', 'Opiniones', (state.reviewsAll || []).filter(r => r.status !== 'approved').length || '')}${tab('admins', 'Usuarios')}${tab('settings', 'Ajustes')}</div>
+    <div class="wrap"><div class="tabs" role="tablist">${tab('summary', 'Resumen')}${tab('products', 'Productos')}${tab('categories', 'Categorías')}${tab('banners', 'Ofertas y banners')}${tab('orders', 'Pedidos', nuevos || '')}${tab('reviews', 'Opiniones', (state.reviewsAll || []).filter(r => r.status !== 'approved').length || '')}${tab('settings', 'Ajustes')}</div>
     <div id="adminBody" role="tabpanel"></div></div></div>`;
 }
 function loginView() {
@@ -26,9 +26,11 @@ function loginView() {
 async function doLogin(f) {
   const u = f.u.value, p = f.p.value;
   if (!u.trim() || !p) { state.loginErr = 'Escribí usuario y contraseña.'; return render(); }
+  const lk = lsGet('nodo_lock') || { n: 0, until: 0 };
+  if (lk.until > Date.now()) { state.loginErr = `Demasiados intentos. Esperá ${Math.ceil((lk.until - Date.now()) / 1000)} segundos.`; return render(); }
   const btn = $('button[type=submit]', f); btn.disabled = true; btn.textContent = 'Ingresando…';
-  try { await DB.auth.login(u, p); state.loginErr = ''; }
-  catch (e) { state.loginErr = e.message; render(); $('#l-u').value = u; $('#l-p').focus(); }
+  try { await DB.auth.login(u, p); state.loginErr = ''; lsSet('nodo_lock', { n: 0, until: 0 }); state.weakPass = DB.mode === 'firebase' && p === '123456'; }
+  catch (e) { const n = (lk.n || 0) + 1; lsSet('nodo_lock', { n, until: n >= 5 ? Date.now() + Math.min(900, 30 * Math.pow(2, n - 5)) * 1000 : 0 }); state.loginErr = e.message + (n >= 5 ? ' Bloqueado temporalmente por seguridad.' : ''); render(); $('#l-u').value = u; $('#l-p').focus(); }
 }
 
 /* Stock automático: la Cloud Function lo descuenta; si no está activa, el panel lo aplica al abrirse. */
@@ -51,7 +53,8 @@ async function applyPendingStock() {
       await DB.save('orders', o.id, { stockApplied: true }); // se marca primero para no repetir
       for (const pid of new Set((o.items || []).map(i => i.id))) {
         const pt = stockPatch(state.products.find(x => x.id === pid), o.items || [], -1);
-        if (pt) await DB.save('products', pid, { ...pt, updatedAt: Date.now() });
+        const pr = state.products.find(x => x.id === pid), q = (o.items || []).filter(i => i.id === pid).reduce((t, i) => t + (Number(i.qty) || 0), 0);
+        if (pr) await DB.save('products', pid, { ...(pt || {}), sold: (Number(pr.sold) || 0) + q, updatedAt: Date.now() });
       }
     }
   } catch (e) { console.warn('stock', e); } finally { stockBusy = false; }
@@ -60,7 +63,7 @@ function renderAdminBody() {
   applyPendingStock(); ensureCats();
   const b = $('#adminBody'); if (!b) return;
   const t = state.admin.tab;
-  b.innerHTML = t === 'admins' ? adminsTab() : t === 'reviews' ? reviewsTab() : t === 'summary' ? summaryTab() : t === 'products' ? productsTab() : t === 'categories' ? categoriesTab() : t === 'banners' ? bannersTab() : t === 'orders' ? ordersTab() : settingsTab();
+  b.innerHTML = t === 'reviews' ? reviewsTab() : t === 'summary' ? summaryTab() : t === 'products' ? productsTab() : t === 'categories' ? categoriesTab() : t === 'banners' ? bannersTab() : t === 'orders' ? ordersTab() : settingsTab();
   const nuevos = state.orders.filter(o => o.status === 'nuevo').length;
   const tabBtn = $('[data-tab=orders]'); if (tabBtn) tabBtn.innerHTML = 'Pedidos' + (nuevos ? `<span class="badge">${nuevos}</span>` : '');
   { const pend = (state.reviewsAll || []).filter(r => r.status !== 'approved').length, rb = $('[data-tab=reviews]'); if (rb) rb.innerHTML = 'Opiniones' + (pend ? `<span class="badge">${pend}</span>` : ''); }
@@ -87,7 +90,7 @@ function productRows() {
 function productsTab() {
   return `<div class="a-tools"><input class="in" type="search" placeholder="Buscar producto" aria-label="Buscar producto" data-act="admSearch" value="${esc(state.admin.q)}">
     <select class="in" aria-label="Filtrar por sección" data-act="admCatFilter"><option value="">Todas las secciones</option>${Object.entries(CATS).map(([k, c]) => `<option value="${k}" ${state.admin.cat === k ? 'selected' : ''}>${c.name}</option>`).join('')}</select>
-    <span class="sp"></span><button type="button" class="btn btn-line" data-act="admScan">Escanear</button><button type="button" class="btn btn-line" data-act="admLabels">Etiquetas</button><button type="button" class="btn btn-line" data-act="admImport">Importar / exportar</button><button type="button" class="btn btn-primary" data-act="admNew">Nuevo producto</button></div>
+    <span class="sp"></span><button type="button" class="btn btn-line" data-act="admPos">Caja</button><button type="button" class="btn btn-line" data-act="admScan">Escanear</button><button type="button" class="btn btn-line" data-act="admLabels">Etiquetas</button><button type="button" class="btn btn-line" data-act="admImport">Importar / exportar</button><button type="button" class="btn btn-primary" data-act="admNew">Nuevo producto</button></div>
     <p class="note" style="margin:-4px 0 12px">Editá precio, precio anterior (para mostrar la oferta) y stock directamente en la lista. Los cambios se publican al instante.</p>
     <div id="aList">${productRows()}</div>`;
 }
@@ -271,29 +274,35 @@ function reviewsTab() {
 }
 function ordersTab() {
   if (!state.orders.length) return '<div class="empty"><h3>Todavía no hay pedidos</h3><p>Cuando un cliente confirme una compra, aparece acá al instante.</p></div>';
-  return `<div class="rows">${state.orders.map(o => `<div class="arow orow"><div><b>${esc(o.code || o.id.slice(0, 6))}</b><small class="muted" style="display:block">${fmtDate(o.createdAt)}</small></div>
+  const of = state.admin.of || {}, trash = state.admin.ov === 'can', list = ordersFiltered(), nCan = state.orders.filter(o => o.status === 'cancelado').length;
+  const views = `<div class="ovtabs" role="tablist"><button type="button" class="btn ${trash ? 'btn-line' : 'btn-primary'} btn-sm" data-act="admView" data-v="act">Pedidos</button><button type="button" class="btn ${trash ? 'btn-primary' : 'btn-line'} btn-sm" data-act="admView" data-v="can">Cancelados / papelera${nCan ? ' (' + nCan + ')' : ''}</button>${trash && nCan ? '<button type="button" class="btn btn-danger btn-sm" data-act="admEmptyTrash">Vaciar papelera</button>' : ''}</div>`;
+  const note = trash ? '<p class="note" style="margin-bottom:10px">Acá van los pedidos cancelados (el stock ya se devolvió). Podés <b>restaurarlos</b> o <b>eliminarlos definitivamente</b>. No cuentan en las ventas.</p>' : '';
+  if (trash && !list.length && !of.q) return `${views}<div class="empty"><h3>La papelera está vacía</h3><p>Los pedidos que canceles aparecen acá automáticamente.</p></div>`;
+  return `${views}${note}${orderFilterBar(of, list.length)}<div class="rows">${list.map(o => `<div class="arow orow"><div><b>${esc(o.code || o.id.slice(0, 6))}</b><small class="muted" style="display:block">${fmtDate(o.createdAt)}</small></div>
     <div class="nm">${esc(o.customer?.name)}<small>${esc(o.customer?.phone)}${o.customer?.payment ? ' · ' + esc(o.customer.payment) : ''} · ${o.itemCount || o.items?.length || 0} productos · ${o.customer?.delivery === 'envio' ? 'Envío' : 'Retiro'}</small></div>
-    <div><b>${money(o.total)}</b>${o.paid ? ' <span class="chipst ok">Pagado</span>' : ''}<br>${waChip(o)}</div>
-    <select class="in" aria-label="Estado del pedido ${esc(o.code)}" data-act="admStatus" data-id="${esc(o.id)}">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${o.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-    <div class="acts"><button type="button" class="btn btn-line btn-sm" data-act="admOrder" data-id="${esc(o.id)}">Ver pedido</button></div></div>`).join('')}</div>`;
+    <div><b>${money(o.total)}</b>${o.paid ? ' <span class="chipst ok">Pagado</span>' : ''}${(o.tags || []).map(t => ` <span class="tagc">${esc(t)}</span>`).join('')}<br>${waChip(o)}</div>
+    ${trash ? '<span class="chipst bad">Cancelado</span>' : `<select class="in" aria-label="Estado del pedido ${esc(o.code)}" data-act="admStatus" data-id="${esc(o.id)}">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${o.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>`}
+    <div class="acts"><button type="button" class="btn btn-line btn-sm" data-act="admOrder" data-id="${esc(o.id)}">Ver pedido</button>${trash ? `<button type="button" class="btn btn-line btn-sm" data-act="admRestore1" data-id="${esc(o.id)}">Restaurar</button><button type="button" class="btn btn-danger btn-sm" data-act="admDelOrder" data-id="${esc(o.id)}">Eliminar</button>` : ''}</div></div>`).join('')}</div>`;
 }
 function openOrder(id) {
   const o = state.orders.find(x => x.id === id); if (!o) return;
   const c = o.customer || {};
-  const msg = `Hola ${c.name || ''}, te escribimos de ${state.settings.storeName} por tu pedido ${o.code || ''}.`;
+  const msg = statusMessage(o);
   openForm('Pedido ' + (o.code || ''), `<p class="muted">${fmtDate(o.createdAt)} · ${waChip(o)}</p>
     <table class="ord-items"><tbody>${(o.items || []).map(i => `<tr><td>${esc(i.qty)} × ${esc(i.name)}</td><td>${money(i.price * i.qty)}</td></tr>`).join('')}${o.discount ? `<tr><td>Descuento${o.coupon ? ' (' + esc(o.coupon) + ')' : ''}</td><td>− ${money(o.discount)}</td></tr>` : ''}${o.shipping ? `<tr><td>Envío${c.zone ? ' (' + esc(c.zone) + ')' : ''}</td><td>${money(o.shipping)}</td></tr>` : ''}<tr><td><b>Total</b></td><td style="font-size:18px">${money(o.total)}</td></tr></tbody></table>
+    ${!o.priceMismatch && o.verifiedTotal == null && (o.items || []).some(i => { const p = state.products.find(x => x.id === i.id); return p && Number(p.price) !== Number(i.price) && !(p.variants && p.variants.length); }) ? '<p class="err">Atención: algún precio del pedido no coincide con el precio actual del producto (pudo cambiar después, o alguien lo alteró). Revisalo antes de cobrar.</p>' : ''}
     ${o.priceMismatch ? `<p class="err">Atención: los precios del pedido no coinciden con los actuales. Total verificado: ${money(o.verifiedTotal)}.</p>` : ''}
     <p><b>${esc(c.name)}</b><br>${esc(c.phone)}<br>${c.payment ? 'Pago: ' + esc(c.payment) + '<br>' : ''}${c.delivery === 'envio' ? 'Envío a: ' + esc(c.address) + (c.zone ? ' (' + esc(c.zone) + ')' : '') : 'Retiro en el local' + (c.pickup ? ': ' + esc(c.pickup) : '')}</p>
     ${c.note ? `<p class="muted" style="margin-top:8px">“${esc(c.note)}”</p>` : ''}
     <div class="panel" style="margin-top:12px"><h3>Mensaje para el cliente</h3><p class="muted">Lo ve en el seguimiento de su pedido (por ejemplo: “Sale mañana, llega entre 14 y 18 h”).</p>
       <textarea class="in" id="o-note" rows="2" maxlength="300">${esc(o.publicNote || '')}</textarea><p><button type="button" class="btn btn-line btn-sm" data-act="admNote" data-id="${esc(o.id)}">Guardar mensaje</button></p></div>
+    ${orderMetaHtml(o)}
     ${orderPayHtml(o)}
-    <div class="dlg-f"><button type="button" class="btn btn-line" data-act="closeDlg">Cerrar</button><a class="btn btn-primary" target="_blank" rel="noopener" href="https://wa.me/${uyPhone(c.phone)}?text=${encodeURIComponent(msg)}">Escribir al cliente</a></div>`);
+    <div class="dlg-f"><button type="button" class="btn btn-line" data-act="admPrint" data-id="${esc(o.id)}">Imprimir</button><button type="button" class="btn btn-line" data-act="closeDlg">Cerrar</button><a class="btn btn-primary" target="_blank" rel="noopener" href="https://wa.me/${uyPhone(c.phone)}?text=${encodeURIComponent(msg)}">Escribir al cliente</a></div>`);
 }
 
 /* ── Ajustes ── */
-function settingsTab() {
+function settingsTabBase() {
   const s = state.settings, perks = (s.perks || []).join('\n');
   return `<form class="panel" data-form="settings" novalidate><h3>Datos de la tienda</h3>
     <div class="field"><label for="s-n">Nombre de la tienda</label><input class="in" id="s-n" name="storeName" required value="${esc(s.storeName)}"></div>
@@ -320,6 +329,10 @@ function settingsTab() {
     <div class="field"><label for="s-z">Localidades y costo de envío (una por línea: Localidad | costo)</label><textarea class="in" id="s-z" name="zones" rows="8">${esc((s.shippingZones || []).map(z => z.name + ' | ' + (Number(z.cost) || 0)).join('\n'))}</textarea><small>Costo 0 = sin costo. Los costos por distancia son estimados: ajustalos a tu realidad. Las localidades que no figuren se coordinan por WhatsApp.</small></div>
     <label class="chk" style="margin:6px 0 14px"><input type="checkbox" name="askPickup" ${s.askPickup ? 'checked' : ''}> Pedir día y hora de retiro cuando el cliente retira en el local</label>
     <div class="field"><label for="s-ti">Datos para transferencias (se muestran al cliente que elige “Transferencia”)</label><textarea class="in" id="s-ti" name="transferInfo" rows="3" placeholder="Banco, cuenta, titular, alias…">${esc(s.transferInfo)}</textarea></div>
+    <div class="field"><label for="s-ga">Google Analytics (ID, ej. G-XXXXXXX)</label><input class="in" id="s-ga" name="gaId" value="${esc(s.gaId || '')}" autocomplete="off"></div>
+    <div class="field"><label for="s-fb">Meta Pixel (ID numérico)</label><input class="in" id="s-fb" name="fbPixelId" value="${esc(s.fbPixelId || '')}" inputmode="numeric" autocomplete="off"></div>
+    <div class="field full"><label for="s-su">Dirección web de la tienda (https://…)</label><input class="in" id="s-su" name="siteUrl" value="${esc(s.siteUrl || '')}" placeholder="https://tuusuario.github.io/tienda/"><small>Se usa para los links de compartir y el mapa del sitio.</small></div>
+    <div class="field full"><label for="s-est">EmailJS: plantilla para avisar el estado al cliente (opcional)</label><input class="in" id="s-est" name="emailStatusTemplateId" value="${esc(s.emailStatusTemplateId || '')}" autocomplete="off"><small>Variables: to_email, to_name, order_code, status, message, store_name.</small></div>
     <div class="field full"><label for="s-rv">Opiniones de clientes</label><select class="in" id="s-rv" name="reviewsMode"><option value="on" ${s.reviewsMode !== 'off' ? 'selected' : ''}>Activadas (las aprobás vos antes de publicarse)</option><option value="verified" ${s.reviewsMode === 'verified' ? 'selected' : ''}>Solo compradores (con código de pedido entregado)</option><option value="off" ${s.reviewsMode === 'off' ? 'selected' : ''}>Desactivadas</option></select></div>
     <div class="field full"><label for="s-mp">Mercado Pago ${mpStatus(s)}</label><select class="in" id="s-mp" name="mpMode"><option value="off" ${s.mpMode !== 'link' && s.mpMode !== 'api' ? 'selected' : ''}>No usar</option><option value="link" ${s.mpMode === 'link' ? 'selected' : ''}>Link de pago fijo (sin servidor, el cliente manda comprobante)</option><option value="api" ${s.mpMode === 'api' ? 'selected' : ''}>Checkout automático (requiere Cloud Function)</option></select></div>
     <div class="field"><label for="s-mpl">Link de pago de Mercado Pago (https://…)</label><input class="in" id="s-mpl" name="mpLink" value="${esc(s.mpLink || '')}" placeholder="https://mpago.la/…"></div>
@@ -415,7 +428,6 @@ function adminClick(a, t) {
   else if (a === 'admImport') openImportDialog();
   else if (a === 'admRevToggle') { const r = state.reviewsAll.find(x => x.id === id); if (r) guarded(async () => { await DB.save('reviews', id, { status: r.status === 'approved' ? 'pending' : 'approved' }); toast(r.status === 'approved' ? 'Opinión oculta' : 'Opinión publicada'); }); }
   else if (a === 'admRevDel') { if (!confirm('¿Eliminar esta opinión?')) return; guarded(async () => { await DB.remove('reviews', id); toast('Opinión eliminada'); }); }
-  else if (a === 'admDelAdmin') { if (!confirm('¿Quitarle el acceso al panel a ' + t.dataset.name + '? Su cuenta deja de poder editar la tienda.')) return; guarded(async () => { await DB.remove('admins', id); toast('Acceso quitado'); }); }
   else if (a === 'admTpl') downloadFile('plantilla-productos.csv', productsCsv([
     { name: 'Remera básica', category: 'Ropa', sub: 'Remeras', brand: 'Marca', price: 890, oldPrice: 1190, stock: 12, description: 'Algodón peinado', specs: 'Corte regular\nLavable a máquina', variants: [{ name: 'Talle', options: ['S', 'M', 'L'] }, { name: 'Color', options: ['Negro', 'Blanco'] }], images: ['https://ejemplo.com/foto1.jpg'], active: true },
     { name: 'Producto sin variantes', category: 'Ropa', price: 1500, stock: 5, active: true }]));
@@ -482,6 +494,7 @@ function adminChange(a, t) {
     await DB.save('orders', id, { status: t.value, history });
     await adjustStockForStatus(o, t.value); // cancelar devuelve el stock; reactivar lo vuelve a descontar
     if (o && o.code) await DB.save('orderStatus', o.code, { status: t.value, updatedAt: now, history }); // lo que ve el cliente al seguir su pedido
+    notifyCustomerStatus(o, t.value);
     toast('Estado actualizado');
   });
   else if (a === 'admPreview') updatePreview(t.closest('form'));
@@ -535,12 +548,6 @@ async function adminSubmit(form) {
     if (!id) data.createdAt = Date.now();
     return guarded(async () => { await DB.save('products', id, data); $('#dlgForm').close(); toast('Producto guardado'); }, form);
   }
-  if (kind === 'newadmin') {
-    const u = s('username'), p = String(f.get('password') || '');
-    if (!u) return formErr(form, 'Escribí un usuario o correo.');
-    if (p.length < 6) return formErr(form, 'La contraseña necesita al menos 6 caracteres.');
-    return guarded(async () => { const r = await DB.createAdmin(u, p); form.reset(); toast(r.existed ? 'Ese usuario ya existía: ahora es administrador' : 'Administrador creado'); }, form);
-  }
   if (kind === 'catmove') {
     const target = s('target'); if (!CATS[target]) return formErr(form, 'Elegí una categoría de destino.');
     return guarded(async () => {
@@ -572,7 +579,7 @@ async function adminSubmit(form) {
       branches: String(f.get('branches') || '').split('\n').map(l => { const [n, a, im, lk] = l.split('|').map(x => (x || '').trim()); return { name: n, address: a, image: im, link: lk }; }).filter(b => b.name).slice(0, 6),
       contactWhatsapp: digits(s('contactWhatsapp')), contactEmail: s('contactEmail'), address: s('address'), hours: String(f.get('hours') || '').split('\n').map(x => x.trim()).filter(Boolean).slice(0, 7),
       shippingZones: String(f.get('zones') || '').split('\n').map(l => { const [n, c] = l.split('|'); return { name: (n || '').trim(), cost: Math.max(0, Math.round(num(c) || 0)) }; }).filter(z => z.name).slice(0, 60),
-      cloudName: s('cloudName'), cloudPreset: s('cloudPreset'), catalogAll: f.get('catalogAll') === 'on', askPickup: f.get('askPickup') === 'on', transferInfo: String(f.get('transferInfo') || '').trim(), reviewsMode: ['off', 'verified'].includes(s('reviewsMode')) ? s('reviewsMode') : 'on', mpDeposit: Math.max(0, Math.min(99, Math.floor(Number(s('mpDeposit')) || 0))), mpRefundUrl: s('mpRefundUrl'), mpMode: ['link', 'api'].includes(s('mpMode')) ? s('mpMode') : 'off', mpLink: s('mpLink'), mpUrl: s('mpUrl'), emailServiceId: s('emailServiceId'), emailTemplateId: s('emailTemplateId'), emailPublicKey: s('emailPublicKey'),
+      cloudName: s('cloudName'), cloudPreset: s('cloudPreset'), catalogAll: f.get('catalogAll') === 'on', askPickup: f.get('askPickup') === 'on', transferInfo: String(f.get('transferInfo') || '').trim(), gaId: s('gaId'), fbPixelId: s('fbPixelId').replace(/\D/g, ''), siteUrl: s('siteUrl'), emailStatusTemplateId: s('emailStatusTemplateId'), reviewsMode: ['off', 'verified'].includes(s('reviewsMode')) ? s('reviewsMode') : 'on', mpDeposit: Math.max(0, Math.min(99, Math.floor(Number(s('mpDeposit')) || 0))), mpRefundUrl: s('mpRefundUrl'), mpMode: ['link', 'api'].includes(s('mpMode')) ? s('mpMode') : 'off', mpLink: s('mpLink'), mpUrl: s('mpUrl'), emailServiceId: s('emailServiceId'), emailTemplateId: s('emailTemplateId'), emailPublicKey: s('emailPublicKey'),
       freeShippingFrom: Math.max(0, Math.round(num(f.get('freeShippingFrom')) || 0)),
       coupons: String(f.get('coupons') || '').split('\n').map(l => { const [c, v] = l.split('|').map(x => (x || '').trim()); const pct = /%$/.test(v || ''); const n = num((v || '').replace('%', '')); return { code: (c || '').toUpperCase().replace(/\s+/g, ''), type: pct ? 'pct' : 'fix', value: pct ? Math.min(100, n) : n }; }).filter(c => c.code && c.value > 0).slice(0, 20),
       maxUnits: Math.max(1, Math.floor(num(f.get('maxUnits')) || 30)), maxPerProduct: Math.max(1, Math.floor(num(f.get('maxPerProduct')) || 10)),
@@ -765,7 +772,7 @@ function summaryTab() {
   const low = state.products.filter(p => p.active !== false && Number.isFinite(Number(p.stock)) && p.stock !== null && Number(p.stock) <= 5).sort((a, b) => a.stock - b.stock).slice(0, 10);
   const nuevos = state.orders.filter(o => o.status === 'nuevo').length, ad = state.admin;
   const statusN = Object.keys(STATUS).map(k => ({ l: STATUS[k], v: state.orders.filter(o => o.status === k && inR(o, from, to)).length }));
-  return `<div class="range" role="group" aria-label="Período">${RANGES.map(([k, l]) => `<button type="button" class="chip ${(ad.range || '30') === k ? 'on' : ''}" data-act="admRange" data-r="${k}">${l}</button>`).join('')}
+  return `${state.weakPass ? '<div class="warnbar" role="alert"><b>Tu contraseña es la inicial (123456).</b> Cualquiera podría entrar al panel. <button type="button" class="lnk" data-act="admTab" data-tab="settings">Cambiarla ahora</button></div>' : ''}<div class="range" role="group" aria-label="Período">${RANGES.map(([k, l]) => `<button type="button" class="chip ${(ad.range || '30') === k ? 'on' : ''}" data-act="admRange" data-r="${k}">${l}</button>`).join('')}
       ${(ad.range === 'custom') ? `<label>Desde <input class="in" type="date" id="sr-from" value="${esc(ad.from || isoDay(from))}"></label><label>Hasta <input class="in" type="date" id="sr-to" value="${esc(ad.to || isoDay(to))}"></label>` : `<small class="muted">${isoDay(from).split('-').reverse().join('/')} – ${isoDay(to).split('-').reverse().join('/')}</small>`}</div>
     <div class="stats">
       <div class="stat"><small>Ventas</small><b>${money0(sales)}</b><span>${delta(sales, pSales)} vs. período anterior</span></div>
@@ -780,24 +787,12 @@ function summaryTab() {
       <div class="panel"><h3>Retiro vs. envío</h3>${bars([{ l: 'Retiro en el local', ...byDel.retiro }, { l: 'Envío', ...byDel.envio }], r => money0(r.v) + ' · ' + r.n)}<h3 style="margin-top:14px">Estado de los pedidos</h3>${bars(statusN, r => r.v)}</div></div>
     <div class="stat-cols"><div class="panel"><h3>Días de la semana</h3>${bars(dows, r => money0(r.v) + ' · ' + r.n)}</div>
       <div class="panel"><h3>Stock bajo o agotado</h3>${low.length ? `<ul class="plain">${low.map(p => `<li><button type="button" class="lnk" data-act="admEdit" data-id="${esc(p.id)}">${esc(p.name)}</button> <b class="${Number(p.stock) <= 0 ? 'bad' : 'lowst'}">${Number(p.stock) <= 0 ? 'agotado' : 'quedan ' + p.stock}</b></li>`).join('')}</ul>` : '<p class="muted">Todo con stock.</p>'}</div></div>
+    ${waitPanel()}
     <p class="note">No incluye pedidos cancelados. “Ventas” son pedidos recibidos en la tienda; “Cobrado” son pagos registrados (Mercado Pago o cobros manuales).</p>`;
 }
 document.addEventListener('click', e => { const t = e.target.closest('[data-act="admRange"]'); if (!t) return; state.admin.range = t.dataset.r; renderAdminBody(); });
 document.addEventListener('change', e => { const t = e.target; if (t && (t.id === 'sr-from' || t.id === 'sr-to')) { state.admin[t.id === 'sr-from' ? 'from' : 'to'] = t.value; renderAdminBody(); } });
 
-/* ── Usuarios (administradores) ── */
-function adminsTab() {
-  const me = (state.user && state.user.email || '').toLowerCase(), disp = e => String(e).replace('@tienda-admin.local', '');
-  const list = [...state.admins].sort((a, b) => String(a.email).localeCompare(b.email));
-  return `<div class="panel"><h3>Quién puede entrar al panel</h3>
-    <ul class="plain">${me ? `<li><span>${esc(disp(me))} <small class="muted">(vos)</small></span></li>` : ''}${list.filter(a => String(a.email).toLowerCase() !== me).map(a => `<li><span>${esc(disp(a.email))}</span><button type="button" class="btn btn-danger btn-sm" data-act="admDelAdmin" data-id="${esc(a.id)}" data-name="${esc(disp(a.email))}">Quitar</button></li>`).join('')}</ul>
-    <p class="note">El administrador principal está definido en las reglas de Firestore y no se puede quitar desde acá.</p></div>
-  <form class="panel" data-form="newadmin" novalidate><h3>Agregar administrador</h3>
-    <div class="form-grid"><div class="field"><label for="n-u">Usuario o correo</label><input class="in" id="n-u" name="username" autocomplete="off" placeholder="ej.: maria"></div>
-    <div class="field"><label for="n-p">Contraseña (mínimo 6)</label><input class="in" id="n-p" name="password" type="password" autocomplete="new-password"></div></div>
-    <p class="err" data-err hidden role="alert"></p><button type="submit" class="btn btn-primary">Crear administrador</button>
-    <p class="note" style="margin-top:10px">Crea la cuenta y le da permiso para editar productos, precios y pedidos. Requiere que el registro esté activado en Firebase (Authentication > Configuración > Acciones del usuario) y las reglas nuevas publicadas.</p></form>`;
-}
 
 /* ── Códigos de barras en el panel ── */
 document.addEventListener('input', e => {

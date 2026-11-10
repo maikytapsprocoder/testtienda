@@ -2,7 +2,7 @@
 // Uso: node scripts/build.js
 const fs = require('fs'), path = require('path');
 const root = path.join(__dirname, '..'), src = f => fs.readFileSync(path.join(root, 'src', f), 'utf8');
-const js = ['art.js', 'seed.js', 'data.js', 'app.js', 'barcode.js', 'admin.js'].map(src).join('\n\n');
+const js = ['art.js', 'seed.js', 'data.js', 'app.js', 'barcode.js', 'admin.js', 'extras.js'].map(src).join('\n\n');
 const html = src('index.template.html')
   .replace('/*__CSS__*/', () => src('styles.css'))
   .replace('/*__JS__*/', () => js);
