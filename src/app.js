@@ -729,6 +729,7 @@ async function submitOrder(form) {
   // Retiro: día y hora (si el negocio lo pide)
   if (c.delivery === 'retiro' && S().askPickup) c.pickup = [c.pickupDay, c.pickupTime].filter(Boolean).join(' · ').slice(0, 60);
   delete c.pickupDay; delete c.pickupTime; if (!c.pickup) delete c.pickup;
+  if (!c.email) delete c.email; // sin correo no se manda el campo (compatible con reglas anteriores)
   // Envío: localidad y costo
   if (c.delivery === 'envio') { if (c.zone === OTRA || !zones().some(z => z.name === c.zone)) c.zone = c.zone === OTRA || !zones().length ? 'Otra localidad (a coordinar)' : zones()[0].name; } else delete c.zone;
   const pr = pricing({ delivery: c.delivery, zone: c.zone }), sh = pr.sh;

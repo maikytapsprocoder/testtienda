@@ -215,3 +215,13 @@ Subida con reducción automática (WebP). Con Cloudinary se sirven en tamaño ch
 
 ## Pedidos cancelados (papelera)
 Al pasar un pedido a *Cancelado* sale de la lista y va a **Pedidos → Cancelados / papelera** (el stock se devuelve solo y no cuenta en ventas). Desde ahí se puede **Restaurar**, **Eliminar** definitivamente o **Vaciar papelera**. Los administradores ya no se gestionan desde el panel (se hace en Firebase Console).
+
+## Pedidos (vista para PC y editor)
+- **Tarjetas grandes** con cliente, productos, importes y acciones; contadores por estado clicables; filtros por texto (incluye productos), etiqueta, pago, fechas y orden.
+- **Ver y editar**: se puede modificar cliente/entrega, productos (cantidad, precio, quitar, agregar o línea libre), **envío, descuento, propina y otros costos**, comentarios, nota interna, etiquetas y guía. El total se recalcula, el stock se ajusta si cambian los productos y el seguimiento del cliente se actualiza. Queda un historial de cambios.
+- **Nuevo pedido manual** (ventas por WhatsApp/teléfono), **Duplicar**, **Marcar pagado**, **Cancelar** (va a la papelera), cambio de estado **en lote**, **Exportar a Excel (CSV)** de lo filtrado.
+
+## Clientes y ganancia
+- **Clientes**: pestaña nueva, armada sola con los pedidos (cantidad de pedidos, total gastado, recurrentes, búsqueda, ver sus pedidos, WhatsApp, exportar CSV).
+- **Costo del producto** (opcional, solo lo ves vos): en el formulario del producto. El Resumen muestra la *Ganancia estimada* según los costos cargados.
+- **Lista inicial de productos**: `productos-para-ingresar.csv` (46 productos genéricos con precios de referencia): Productos → Importar / exportar → Subir planilla.

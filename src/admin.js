@@ -10,7 +10,7 @@ function adminView() {
   const rules = state.fsError ? '<div class="wrap"><p class="err" role="alert" style="margin:12px 0">No se pueden leer los productos de Firestore. Casi seguro faltan publicar las reglas (Firebase > Firestore > Reglas). Mientras tanto la tienda muestra productos de ejemplo.</p></div>' : '';
   return `<div id="adminShell"><div class="adm-bar"><div class="wrap"><span class="logo"><span class="logo-mark"></span>${esc(state.settings.storeName)} · Administración</span>
     <nav><a class="btn" href="#/">Ver tienda</a><button type="button" class="btn" data-act="admLogout">Salir</button></nav></div></div>${rules}
-    <div class="wrap"><div class="tabs" role="tablist">${tab('summary', 'Resumen')}${tab('products', 'Productos')}${tab('categories', 'Categorías')}${tab('banners', 'Ofertas y banners')}${tab('orders', 'Pedidos', nuevos || '')}${tab('reviews', 'Opiniones', (state.reviewsAll || []).filter(r => r.status !== 'approved').length || '')}${tab('settings', 'Ajustes')}</div>
+    <div class="wrap"><div class="tabs" role="tablist">${tab('summary', 'Resumen')}${tab('products', 'Productos')}${tab('categories', 'Categorías')}${tab('banners', 'Ofertas y banners')}${tab('orders', 'Pedidos', nuevos || '')}${tab('customers', 'Clientes')}${tab('reviews', 'Opiniones', (state.reviewsAll || []).filter(r => r.status !== 'approved').length || '')}${tab('settings', 'Ajustes')}</div>
     <div id="adminBody" role="tabpanel"></div></div></div>`;
 }
 function loginView() {
@@ -63,7 +63,7 @@ function renderAdminBody() {
   applyPendingStock(); ensureCats();
   const b = $('#adminBody'); if (!b) return;
   const t = state.admin.tab;
-  b.innerHTML = t === 'reviews' ? reviewsTab() : t === 'summary' ? summaryTab() : t === 'products' ? productsTab() : t === 'categories' ? categoriesTab() : t === 'banners' ? bannersTab() : t === 'orders' ? ordersTab() : settingsTab();
+  b.innerHTML = t === 'customers' ? customersTab() : t === 'reviews' ? reviewsTab() : t === 'summary' ? summaryTab() : t === 'products' ? productsTab() : t === 'categories' ? categoriesTab() : t === 'banners' ? bannersTab() : t === 'orders' ? ordersTab() : settingsTab();
   const nuevos = state.orders.filter(o => o.status === 'nuevo').length;
   const tabBtn = $('[data-tab=orders]'); if (tabBtn) tabBtn.innerHTML = 'Pedidos' + (nuevos ? `<span class="badge">${nuevos}</span>` : '');
   { const pend = (state.reviewsAll || []).filter(r => r.status !== 'approved').length, rb = $('[data-tab=reviews]'); if (rb) rb.innerHTML = 'Opiniones' + (pend ? `<span class="badge">${pend}</span>` : ''); }
@@ -97,7 +97,7 @@ function productsTab() {
 
 /* ── Formularios ── */
 function openForm(title, html) {
-  const d = $('#dlgForm');
+  const d = $('#dlgForm'); d.classList.remove('wide');
   d.innerHTML = `<div class="dlg-in"><button type="button" class="dlg-x" data-act="closeDlg" aria-label="Cerrar">×</button><h2>${esc(title)}</h2>${html}</div>`;
   if (!d.open) d.showModal();
 }
@@ -187,6 +187,7 @@ function openProductForm(id, preset) {
       <div class="field"><label for="f-st">Stock</label><input class="in" id="f-st" name="stock" type="number" min="0" step="1" inputmode="numeric" value="${p.stock === null || p.stock === undefined ? '' : esc(p.stock)}"><small>Vacío = sin límite. 0 = sin stock.</small></div>
       <div class="field"><label for="f-p">Precio ($)</label><input class="in" id="f-p" name="price" type="number" min="0" step="any" inputmode="decimal" required value="${p.price ?? ''}"></div>
       <div class="field"><label for="f-o">Precio anterior ($)</label><input class="in" id="f-o" name="oldPrice" type="number" min="0" step="any" inputmode="decimal" value="${p.oldPrice ? esc(p.oldPrice) : ''}"><small>Si es mayor que el precio, se muestra como oferta.</small></div>
+      <div class="field"><label for="f-cost">Costo ($) <small class="muted">(opcional, solo vos lo ves)</small></label><input class="in" id="f-cost" name="cost" type="number" min="0" step="any" inputmode="decimal" value="${p.cost ? esc(p.cost) : ''}"><small>Sirve para calcular tu ganancia en el Resumen.</small></div>
       <div class="field full"><label for="f-d">Descripción</label><textarea class="in" id="f-d" name="description" rows="3">${esc(p.description)}</textarea></div>
       <div class="field full"><label for="f-sp">Características</label><textarea class="in" id="f-sp" name="specs" rows="4">${esc(p.specs)}</textarea><small>Una por línea. Ej.: Memoria: 16 GB</small></div>
       <div class="field full"><label for="f-v">Variantes (opcional, una por línea: Grupo: opción, opción)</label><textarea class="in" id="f-v" name="variants" rows="3" placeholder="Talle: S, M, L, XL&#10;Color: Negro, Blanco">${esc(prodVariants(p).map(g => g.name + ': ' + g.options.join(', ')).join('\n'))}</textarea><small>El cliente tiene que elegir una opción de cada grupo antes de agregar al carrito. Si no cargás stock por opción, el stock de arriba es el total del producto.</small></div>
@@ -272,35 +273,6 @@ function reviewsTab() {
     <div style="flex:2">${esc(r.text) || '<i class="muted">(sin comentario)</i>'}</div><div><span class="chipst ${r.status === 'approved' ? 'ok' : ''}">${r.status === 'approved' ? 'Publicada' : 'Pendiente'}</span></div>
     <div class="acts"><button type="button" class="btn btn-line btn-sm" data-act="admRevToggle" data-id="${esc(r.id)}">${r.status === 'approved' ? 'Ocultar' : 'Aprobar'}</button><button type="button" class="btn btn-line btn-sm" data-act="admRevDel" data-id="${esc(r.id)}">Eliminar</button></div></div>`).join('')}</div>`;
 }
-function ordersTab() {
-  if (!state.orders.length) return '<div class="empty"><h3>Todavía no hay pedidos</h3><p>Cuando un cliente confirme una compra, aparece acá al instante.</p></div>';
-  const of = state.admin.of || {}, trash = state.admin.ov === 'can', list = ordersFiltered(), nCan = state.orders.filter(o => o.status === 'cancelado').length;
-  const views = `<div class="ovtabs" role="tablist"><button type="button" class="btn ${trash ? 'btn-line' : 'btn-primary'} btn-sm" data-act="admView" data-v="act">Pedidos</button><button type="button" class="btn ${trash ? 'btn-primary' : 'btn-line'} btn-sm" data-act="admView" data-v="can">Cancelados / papelera${nCan ? ' (' + nCan + ')' : ''}</button>${trash && nCan ? '<button type="button" class="btn btn-danger btn-sm" data-act="admEmptyTrash">Vaciar papelera</button>' : ''}</div>`;
-  const note = trash ? '<p class="note" style="margin-bottom:10px">Acá van los pedidos cancelados (el stock ya se devolvió). Podés <b>restaurarlos</b> o <b>eliminarlos definitivamente</b>. No cuentan en las ventas.</p>' : '';
-  if (trash && !list.length && !of.q) return `${views}<div class="empty"><h3>La papelera está vacía</h3><p>Los pedidos que canceles aparecen acá automáticamente.</p></div>`;
-  return `${views}${note}${orderFilterBar(of, list.length)}<div class="rows">${list.map(o => `<div class="arow orow"><div><b>${esc(o.code || o.id.slice(0, 6))}</b><small class="muted" style="display:block">${fmtDate(o.createdAt)}</small></div>
-    <div class="nm">${esc(o.customer?.name)}<small>${esc(o.customer?.phone)}${o.customer?.payment ? ' · ' + esc(o.customer.payment) : ''} · ${o.itemCount || o.items?.length || 0} productos · ${o.customer?.delivery === 'envio' ? 'Envío' : 'Retiro'}</small></div>
-    <div><b>${money(o.total)}</b>${o.paid ? ' <span class="chipst ok">Pagado</span>' : ''}${(o.tags || []).map(t => ` <span class="tagc">${esc(t)}</span>`).join('')}<br>${waChip(o)}</div>
-    ${trash ? '<span class="chipst bad">Cancelado</span>' : `<select class="in" aria-label="Estado del pedido ${esc(o.code)}" data-act="admStatus" data-id="${esc(o.id)}">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${o.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>`}
-    <div class="acts"><button type="button" class="btn btn-line btn-sm" data-act="admOrder" data-id="${esc(o.id)}">Ver pedido</button>${trash ? `<button type="button" class="btn btn-line btn-sm" data-act="admRestore1" data-id="${esc(o.id)}">Restaurar</button><button type="button" class="btn btn-danger btn-sm" data-act="admDelOrder" data-id="${esc(o.id)}">Eliminar</button>` : ''}</div></div>`).join('')}</div>`;
-}
-function openOrder(id) {
-  const o = state.orders.find(x => x.id === id); if (!o) return;
-  const c = o.customer || {};
-  const msg = statusMessage(o);
-  openForm('Pedido ' + (o.code || ''), `<p class="muted">${fmtDate(o.createdAt)} · ${waChip(o)}</p>
-    <table class="ord-items"><tbody>${(o.items || []).map(i => `<tr><td>${esc(i.qty)} × ${esc(i.name)}</td><td>${money(i.price * i.qty)}</td></tr>`).join('')}${o.discount ? `<tr><td>Descuento${o.coupon ? ' (' + esc(o.coupon) + ')' : ''}</td><td>− ${money(o.discount)}</td></tr>` : ''}${o.shipping ? `<tr><td>Envío${c.zone ? ' (' + esc(c.zone) + ')' : ''}</td><td>${money(o.shipping)}</td></tr>` : ''}<tr><td><b>Total</b></td><td style="font-size:18px">${money(o.total)}</td></tr></tbody></table>
-    ${!o.priceMismatch && o.verifiedTotal == null && (o.items || []).some(i => { const p = state.products.find(x => x.id === i.id); return p && Number(p.price) !== Number(i.price) && !(p.variants && p.variants.length); }) ? '<p class="err">Atención: algún precio del pedido no coincide con el precio actual del producto (pudo cambiar después, o alguien lo alteró). Revisalo antes de cobrar.</p>' : ''}
-    ${o.priceMismatch ? `<p class="err">Atención: los precios del pedido no coinciden con los actuales. Total verificado: ${money(o.verifiedTotal)}.</p>` : ''}
-    <p><b>${esc(c.name)}</b><br>${esc(c.phone)}<br>${c.payment ? 'Pago: ' + esc(c.payment) + '<br>' : ''}${c.delivery === 'envio' ? 'Envío a: ' + esc(c.address) + (c.zone ? ' (' + esc(c.zone) + ')' : '') : 'Retiro en el local' + (c.pickup ? ': ' + esc(c.pickup) : '')}</p>
-    ${c.note ? `<p class="muted" style="margin-top:8px">“${esc(c.note)}”</p>` : ''}
-    <div class="panel" style="margin-top:12px"><h3>Mensaje para el cliente</h3><p class="muted">Lo ve en el seguimiento de su pedido (por ejemplo: “Sale mañana, llega entre 14 y 18 h”).</p>
-      <textarea class="in" id="o-note" rows="2" maxlength="300">${esc(o.publicNote || '')}</textarea><p><button type="button" class="btn btn-line btn-sm" data-act="admNote" data-id="${esc(o.id)}">Guardar mensaje</button></p></div>
-    ${orderMetaHtml(o)}
-    ${orderPayHtml(o)}
-    <div class="dlg-f"><button type="button" class="btn btn-line" data-act="admPrint" data-id="${esc(o.id)}">Imprimir</button><button type="button" class="btn btn-line" data-act="closeDlg">Cerrar</button><a class="btn btn-primary" target="_blank" rel="noopener" href="https://wa.me/${uyPhone(c.phone)}?text=${encodeURIComponent(msg)}">Escribir al cliente</a></div>`);
-}
-
 /* ── Ajustes ── */
 function settingsTabBase() {
   const s = state.settings, perks = (s.perks || []).join('\n');
@@ -488,15 +460,7 @@ function adminChange(a, t) {
     guarded(async () => { await DB.save('products', id, { [field]: v, updatedAt: Date.now() }); toast('Guardado'); });
   }
   else if (a === 'admActive') guarded(async () => { await DB.save('products', id, { active: t.checked, updatedAt: Date.now() }); });
-  else if (a === 'admStatus') guarded(async () => {
-    const o = state.orders.find(x => x.id === id);
-    const now = Date.now(), history = [...(Array.isArray(o.history) && o.history.length ? o.history : [{ s: 'nuevo', t: o.createdAt || now }]), { s: t.value, t: now }];
-    await DB.save('orders', id, { status: t.value, history });
-    await adjustStockForStatus(o, t.value); // cancelar devuelve el stock; reactivar lo vuelve a descontar
-    if (o && o.code) await DB.save('orderStatus', o.code, { status: t.value, updatedAt: now, history }); // lo que ve el cliente al seguir su pedido
-    notifyCustomerStatus(o, t.value);
-    toast('Estado actualizado');
-  });
+  else if (a === 'admStatus') guarded(async () => { await setOrderStatus(state.orders.find(x => x.id === id), t.value); });
   else if (a === 'admPreview') updatePreview(t.closest('form'));
   else if (a === 'admLogoFile') {
     const f = t.files[0], form = t.closest('form'); if (!f) return;
@@ -539,7 +503,7 @@ async function adminSubmit(form) {
       const bp = eanProblem(bcode); if (bp) return formErr(form, bp);
       const dup = findByBarcode(bcode); if (dup && dup.id !== (form.dataset.id || '')) return formErr(form, `Ese código ya lo usa “${dup.name}”.`);
     }
-    const data = { barcode: bcode, name: s('name'), category: s('category'), sub: s('sub'), brand: s('brand'), price, oldPrice: old, stock, description: s('description'), specs: String(f.get('specs') || '').trim(), variants: String(f.get('variants') || '').split('\n').map(l => { const [n, o] = l.split(':'); return { name: (n || '').trim(), options: [...new Set(String(o || '').split(',').map(x => x.trim()).filter(Boolean))].slice(0, 20) }; }).filter(g => g.name && g.options.length).slice(0, 3), images, image: images[0] || '', art: s('art'), active: f.get('active') === 'on', catalogOnly: f.get('catalogOnly') === 'on', hidePrice: f.get('catalogOnly') === 'on' && f.get('hidePrice') === 'on', updatedAt: Date.now() };
+    const data = { barcode: bcode, name: s('name'), category: s('category'), sub: s('sub'), brand: s('brand'), price, oldPrice: old, cost: String(f.get('cost') || '').trim() === '' ? 0 : num(f.get('cost')), stock, description: s('description'), specs: String(f.get('specs') || '').trim(), variants: String(f.get('variants') || '').split('\n').map(l => { const [n, o] = l.split(':'); return { name: (n || '').trim(), options: [...new Set(String(o || '').split(',').map(x => x.trim()).filter(Boolean))].slice(0, 20) }; }).filter(g => g.name && g.options.length).slice(0, 3), images, image: images[0] || '', art: s('art'), active: f.get('active') === 'on', catalogOnly: f.get('catalogOnly') === 'on', hidePrice: f.get('catalogOnly') === 'on' && f.get('hidePrice') === 'on', updatedAt: Date.now() };
     const vsTxt = String(f.get('vstock') || '').trim();
     if (vsTxt && data.variants.length) {
       const vs = parseVS(vsTxt, comboKeys(data.variants));
@@ -777,6 +741,7 @@ function summaryTab() {
     <div class="stats">
       <div class="stat"><small>Ventas</small><b>${money0(sales)}</b><span>${delta(sales, pSales)} vs. período anterior</span></div>
       <div class="stat"><small>Pedidos</small><b>${n}</b><span>${delta(n, prev.length)} ${n && span ? (n / span).toFixed(1) + ' por día' : ''}</span></div>
+      ${(() => { let g = 0, k = 0, t = 0; cur.forEach(o => (o.items || []).forEach(i => { t++; const pr = state.products.find(x => x.id === i.id); if (pr && Number(pr.cost) > 0) { k++; g += ((Number(i.price) || 0) - Number(pr.cost)) * (Number(i.qty) || 0); } })); return `<div class="stat"><small>Ganancia estimada</small><b>${k ? money0(g) : '—'}</b><span>${k ? `según costos cargados (${k} de ${t} líneas)` : 'Cargá el costo en cada producto'}</span></div>`; })()}
       <div class="stat"><small>Ticket promedio</small><b>${money0(avg)}</b><span>${units(cur)} unidades vendidas</span></div>
       <div class="stat"><small>Cobrado</small><b>${money0(collected)}</b><span>${sales > collected ? 'Por cobrar ' + money0(sales - collected) : 'Todo cobrado'}${refunded ? ' · Reembolsado ' + money0(refunded) : ''}</span></div>
       <div class="stat ${nuevos ? 'hot' : ''}"><small>Pedidos nuevos</small><b>${nuevos}</b><span><button type="button" class="lnk" data-act="admTab" data-tab="orders">Ver pedidos</button></span></div></div>
